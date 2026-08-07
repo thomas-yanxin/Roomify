@@ -1,0 +1,15 @@
+# secrets — never commit credentials
+.env
+
+# python
+__pycache__/
+*.pyc
+.venv/
+dist/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# local debug output
+debug/

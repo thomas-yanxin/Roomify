@@ -1,0 +1,54 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "roomify"
+version = "0.1.0"
+description = "Robust 2D floor plan → structured JSON, via a hybrid CV + VLM pipeline"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.11"
+authors = [{ name = "thomas-yanxin" }]
+keywords = ["floorplan", "floor-plan", "computer-vision", "vlm", "structured-json"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Image Recognition",
+]
+dependencies = [
+    "numpy>=1.26",
+    "opencv-python-headless>=4.9",
+    "shapely>=2.0",
+    "pydantic>=2.7",
+    "pymupdf>=1.24",
+    "openai>=1.40",
+]
+
+[project.urls]
+Repository = "https://github.com/thomas-yanxin/Roomify"
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.5", "mypy>=1.10"]
+
+[project.scripts]
+roomify = "roomify.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/roomify"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

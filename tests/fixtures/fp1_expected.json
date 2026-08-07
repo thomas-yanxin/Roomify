@@ -1,0 +1,22 @@
+{
+  "comment": "Ground truth for floorplan-1.png, extracted from a human-reviewed reference (poche run). Swing/hinge values from that reference were VLM inventions (the drawing has no swing arcs) and are deliberately excluded.",
+  "rooms": [
+    {"name": "客厅", "room_type": "living_room", "printed_area_sqm": 37.52},
+    {"name": "卧室", "room_type": "bedroom", "printed_area_sqm": 14.28},
+    {"name": "卧室", "room_type": "bedroom", "printed_area_sqm": 9.83},
+    {"name": "卧室", "room_type": "bedroom", "printed_area_sqm": 9.65},
+    {"name": "厨房", "room_type": "kitchen", "printed_area_sqm": 5.95},
+    {"name": "阳台", "room_type": "balcony", "printed_area_sqm": 3.59},
+    {"name": "卫生间", "room_type": "bathroom", "printed_area_sqm": 3.36},
+    {"name": "卫生间", "room_type": "bathroom", "printed_area_sqm": 2.72},
+    {"name": "储物间", "room_type": "storage", "printed_area_sqm": 1.37}
+  ],
+  "dimension_chains_mm": {
+    "top": [2632, 3709, 3364],
+    "bottom": [1869, 350, 3040, 3364],
+    "left": [4068, 1197, 2194, 2194, 1684, 350],
+    "right": [3909, 1954, 1158, 1594, 3071]
+  },
+  "openings_total_reference": 17,
+  "north_angle_deg": 0
+}
