@@ -81,11 +81,22 @@ Selected fields from the full output:
 
 ## Install
 
-Roomify requires Python 3.11 or newer.
+Roomify requires Python 3.11 or newer. The recommended installer is
+[uv](https://docs.astral.sh/uv/getting-started/installation/):
 
 ```bash
 git clone https://github.com/thomas-yanxin/Roomify.git
 cd Roomify
+uv sync --locked
+uv run roomify --help
+```
+
+`uv sync` creates `.venv`, installs Roomify in editable mode, and reproduces
+the dependency versions in `uv.lock`.
+
+Without uv, use pip in a fresh environment:
+
+```bash
 python -m venv .venv
 source .venv/bin/activate  # Windows: .venv\Scripts\activate
 python -m pip install --upgrade pip
@@ -93,8 +104,8 @@ python -m pip install -e .
 python -m pip check
 ```
 
-A PyPI package has not been published yet. Use a fresh environment: the
-different OpenCV wheel variants all provide `cv2` and must not be mixed.
+A PyPI package has not been published yet. The different OpenCV wheel variants
+all provide `cv2` and must not be mixed in the same environment.
 
 ## Quick start
 
@@ -104,12 +115,12 @@ are set.
 ### Command line
 
 ```bash
-roomify examples/floorplan-1.png -o plan.json
+uv run roomify examples/floorplan-1.png -o plan.json
 ```
 
 Images and PDFs are supported. Use `--page N` for a PDF page, `--no-vlm` for
 CV-only parsing, and `--debug DIR` to save the masks and overlays used by the
-pipeline.
+pipeline. If you used the pip fallback and activated `.venv`, omit `uv run`.
 
 ### Python
 
@@ -209,7 +220,7 @@ warning and leave the affected fields unresolved.
 ## Development
 
 ```bash
-uv sync --extra dev
+uv sync --locked --extra dev
 uv run pytest
 uv run ruff check src tests
 uv run mypy src

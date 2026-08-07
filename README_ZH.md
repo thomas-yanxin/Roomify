@@ -80,11 +80,22 @@ Roomify 从图中得到：
 
 ## 安装
 
-Roomify 需要 Python 3.11 或更高版本。
+Roomify 需要 Python 3.11 或更高版本。推荐使用
+[uv](https://docs.astral.sh/uv/getting-started/installation/)：
 
 ```bash
 git clone https://github.com/thomas-yanxin/Roomify.git
 cd Roomify
+uv sync --locked
+uv run roomify --help
+```
+
+`uv sync` 会创建 `.venv`、以 editable 模式安装 Roomify，并严格复现
+`uv.lock` 中的依赖版本。
+
+无法使用 uv 时，再在干净环境中使用 pip：
+
+```bash
 python -m venv .venv
 source .venv/bin/activate  # Windows: .venv\Scripts\activate
 python -m pip install --upgrade pip
@@ -92,8 +103,7 @@ python -m pip install -e .
 python -m pip check
 ```
 
-项目暂未发布到 PyPI。请使用干净的虚拟环境：不同 OpenCV wheel 都提供
-`cv2`，不能混装。
+项目暂未发布到 PyPI。不同 OpenCV wheel 都提供 `cv2`，不能在同一环境中混装。
 
 ## 快速开始
 
@@ -102,11 +112,12 @@ python -m pip check
 ### 命令行
 
 ```bash
-roomify examples/floorplan-1.png -o plan.json
+uv run roomify examples/floorplan-1.png -o plan.json
 ```
 
 支持常见图片格式和 PDF。`--page N` 用于选择 PDF 页，`--no-vlm` 只运行
-计算机视觉部分，`--debug DIR` 保存各阶段的掩码与标记图。
+计算机视觉部分，`--debug DIR` 保存各阶段的掩码与标记图。若使用 pip 备用流程
+并已激活 `.venv`，请省略 `uv run`。
 
 ### Python
 
@@ -200,7 +211,7 @@ FloorPlan
 ## 开发
 
 ```bash
-uv sync --extra dev
+uv sync --locked --extra dev
 uv run pytest
 uv run ruff check src tests
 uv run mypy src

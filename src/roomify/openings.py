@@ -149,6 +149,7 @@ def _scan_segment(
         lo, hi = max(0, lo), min(h - 1, hi)
         strip = solid[lo : hi + 1, max(0, c - band) : min(w, c + band + 1)]
         coverage = strip.any(axis=1)
+    assert isinstance(coverage, np.ndarray)
     if coverage.size == 0:
         return []
 
