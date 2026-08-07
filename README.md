@@ -1,218 +1,227 @@
+<div align="center">
+
 # Roomify
 
-Robust 2D floor plan → structured JSON.
+**Floor plans in. Measured JSON out.**
 
-Roomify converts raw residential floor-plan images and PDFs — the kind found
-on Chinese property listings (贝壳/链家-style 户型图) and in decoration
-drawings — into a fully structured, validated JSON document: rooms with
-polygons and areas, walls, doors, windows and other legend elements,
-millimetre calibration, and honest uncertainty reporting.
+Roomify parses residential floor-plan images and PDFs into rooms, walls,
+openings, and millimetre-scale geometry.
+
+[English](README.md) · [简体中文](README_ZH.md)
+
+![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)
+![Status: Beta](https://img.shields.io/badge/status-beta-6f42c1)
+![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-2ea44f)
+
+</div>
+
+OpenCV measures the geometry. A vision-language model reads labels and
+symbols. The model never supplies coordinates. Without a VLM, Roomify still
+returns pixel geometry and records what it could not resolve.
 
 ```bash
 roomify floorplan.png -o floorplan.json
 ```
 
-```python
-from roomify import parse
+## Example
 
-plan = parse("floorplan.png")
-plan.rooms[0].name          # "客厅"
-plan.rooms[0].area_sqm      # 37.34  (printed on the plan: 37.52 → deviation −0.5%)
-plan.openings[3].element_type  # "sliding_door"
-plan.model_dump_json()      # the full document
+This plan is included in the repository:
+
+<p align="center">
+  <img src="examples/floorplan-1.png" alt="Residential floor plan used by the Roomify example" width="620">
+</p>
+
+[`floorplan-1.png`](examples/floorplan-1.png) →
+[`floorplan-1.json`](examples/floorplan-1.json)
+
+Roomify found:
+
+- 9 rooms
+- 55 wall segments
+- 18 wall openings
+- separate horizontal and vertical scales, with `high` confidence
+- a living-room area of 37.34 m²; the drawing prints 37.52 m²
+
+Selected fields from the full output:
+
+```json
+{
+  "schema_version": "1.0",
+  "scale": {
+    "px_per_mm_x": 0.0431736218444101,
+    "px_per_mm_y": 0.048002053563788824,
+    "method": "dimension_chains+printed_areas",
+    "confidence": "high"
+  },
+  "rooms": [
+    {
+      "id": "room_1",
+      "name": "客厅",
+      "room_type": "living_room",
+      "area_sqm": 37.33987625081361,
+      "printed_area_sqm": 37.52,
+      "area_deviation_flag": false,
+      "source": "cv+vlm",
+      "confidence": 0.95
+    }
+  ],
+  "openings": [
+    {
+      "id": "op_1",
+      "element_type": "window",
+      "width_mm": 1250.763723150358,
+      "wall_id": "wall_43",
+      "connects": ["room_4", "exterior"],
+      "source": "cv+vlm",
+      "confidence": 0.9
+    }
+  ]
+}
 ```
-
-## Why hybrid
-
-Pure-VLM extraction of floor-plan *geometry* is unreliable: models read
-labels perfectly but return polygons that are 20–50 px off and miss small
-rooms. Classical CV is the opposite: pixel-exact boundaries, but no idea
-what "卧室 9.65㎡" means. Roomify hard-splits the work:
-
-- **CV owns all geometry.** Wall masks, room polygons, opening positions,
-  areas, perimeters, edge lengths. Every coordinate in the output is
-  measured, not imagined.
-- **The VLM owns all semantics.** Room names and types, printed areas,
-  dimension-chain transcription, legend classification (door vs window vs
-  passage), and vetoes of false CV detections. It communicates through
-  marker-keyed contracts (numbered/lettered overlays burned into the
-  image), never through coordinates.
-- **Geometry never blocks on the VLM.** Every VLM call has a defined
-  degradation path; `parse(..., use_vlm=False)` still emits a valid
-  pixel-only document.
-
-Two design details matter more than they look:
-
-- **Anisotropic calibration.** Exported listing images are frequently
-  resized non-uniformly (the reference corpus measures ~10% difference
-  between axes), so the scale is solved per axis (`px_per_mm_x` /
-  `px_per_mm_y`): dimension chains propose per-axis candidates, and the
-  median of per-room `area_px / printed_area` ratios elects the pair —
-  which makes the calibration robust to individual OCR misreads on either
-  source.
-- **No invented facts.** Door swing and hinge come exclusively from pixel
-  evidence (drawn swing arcs — stroked or tinted). Plans that don't draw
-  arcs get `swing: null` plus an entry in `unresolved`, never a guess.
-  Everything the parser could not determine is enumerated in `warnings`
-  and `unresolved`.
 
 ## Install
 
-```bash
-pip install -e .          # from a checkout; PyPI release pending
-```
-
-Python ≥ 3.11. Core dependencies: OpenCV (headless), NumPy, Shapely,
-Pydantic v2, PyMuPDF, and the OpenAI SDK (any OpenAI-compatible
-vision-capable endpoint works).
-
-### Configuration
-
-Roomify reads VLM credentials from the environment only — there are no
-defaults in code:
+Roomify requires Python 3.11 or newer.
 
 ```bash
-ROOMIFY_VLM_API_KEY=...                    # required for semantic parsing
-ROOMIFY_VLM_BASE_URL=https://.../v1        # OpenAI-compatible endpoint
-ROOMIFY_VLM_MODEL=qwen3.8-max              # must support image input
+git clone https://github.com/thomas-yanxin/Roomify.git
+cd Roomify
+python -m venv .venv
+source .venv/bin/activate  # Windows: .venv\Scripts\activate
+python -m pip install --upgrade pip
+python -m pip install -e .
+python -m pip check
 ```
 
-Copy `.env.example` to `.env` for local work (git-ignored). Without
-credentials, `roomify --no-vlm` / `parse(use_vlm=False)` still produce
-pixel-only geometry.
+A PyPI package has not been published yet. Use a fresh environment: the
+different OpenCV wheel variants all provide `cv2` and must not be mixed.
 
-## CLI
+## Quick start
 
+The values below assume the VLM environment variables in the next section
+are set.
+
+### Command line
+
+```bash
+roomify examples/floorplan-1.png -o plan.json
 ```
-roomify INPUT [-o out.json] [--page N] [--no-vlm] [--debug DIR]
+
+Images and PDFs are supported. Use `--page N` for a PDF page, `--no-vlm` for
+CV-only parsing, and `--debug DIR` to save the masks and overlays used by the
+pipeline.
+
+### Python
+
+```python
+from roomify import parse
+
+plan = parse("examples/floorplan-1.png")
+
+print(plan.rooms[0].name)       # 客厅
+print(plan.rooms[0].area_sqm)   # 37.33987625081361
+print(plan.scale.confidence)    # high
+
+plan.model_dump_json(indent=2)
 ```
 
-- `INPUT`: `.png/.jpg/.tif/.bmp/.webp` or `.pdf` (largest embedded raster
-  is used when it is ≥1000 px on both sides, otherwise the page is rendered
-  at 300 DPI).
-- `--debug DIR` writes per-stage overlays (wall mask, room polygons,
-  opening candidates, and the exact images sent to the VLM). With a
-  pipeline this threshold-driven, the debug images are part of the
-  algorithm — look at them before doubting a result.
+For pixel geometry without VLM calls:
 
-## Output document
+```python
+plan = parse("floorplan.png", use_vlm=False)
+```
 
-Top level (`FloorPlan`):
+## VLM configuration
 
-| field | meaning |
-|---|---|
-| `image_width_px` / `image_height_px` | original input size; **all `*_px` coordinates live in this frame** (x right, y down, origin top-left) |
-| `page` | PDF page index, `null` for images |
-| `north_angle_deg` | north-arrow direction (0 = up, clockwise), `null` if none |
-| `scale` | px↔mm calibration or `null`; `scale: null` ⇔ every `*_mm`/`*_sqm` field is `null` |
-| `rooms` / `walls` / `openings` / `elements` | see below |
-| `warnings` | machine-readable notes (`code`, `message`, `ref`) about degradations and conflicts |
-| `unresolved` | facts the drawing does not contain (`path`, `reason`) — absent, not guessed |
+Roomify works with an OpenAI-compatible endpoint that accepts images. It
+reads credentials from the process environment:
 
-`Scale`: `px_per_mm_x`, `px_per_mm_y`, `anisotropy`, `method`
-(`dimension_chains` / `printed_areas` / both), `confidence`
-(`high`/`medium`/`low`), and the evidence counts used.
+```bash
+export ROOMIFY_VLM_API_KEY="..."
+export ROOMIFY_VLM_BASE_URL="https://your-endpoint.example/v1"
+export ROOMIFY_VLM_MODEL="your-vision-model"
+```
 
-`Room`: `name` (label text exactly as printed, e.g. `"卧室"` — never
-translated), `room_type` (normalized enum: `living_room`, `bedroom`,
-`kitchen`, `bathroom`, `balcony`, `closet`, `storage`, …), `polygon_px`
-(**open ring** — first vertex not repeated; edge *i* runs vertex *i* →
-*i+1*, wrapping), `polygon_mm`, `area_px`, `area_sqm`, `perimeter_*`,
-`edge_lengths_*`, `printed_area_sqm` (read off the plan),
-`area_deviation` and `area_deviation_flag` (|computed − printed|/printed >
-10%), `source` (`cv` / `vlm` / `cv+vlm`), `confidence`.
+Roomify does not load `.env` files itself. `.env.example` lists the supported
+variables.
 
-`Wall`: centerline `start_px`/`end_px` (+`_mm`), `thickness_px`/`_mm`, and
-`rooms` — the ids on each side, `"exterior"` for outside the building,
-`"unknown"` for circulation space no room polygon covered.
+## JSON structure
 
-`Opening` (wall-hosted elements): `element_type` from the legend
-vocabulary — `passage`, `single_door`, `double_door`, `sliding_door`,
-`folding_door`, `window`, `casement_window`, `sliding_window`,
-`fixed_window`, `bay_window`, `floor_to_ceiling_window`, `blind_window`,
-plus `unknown_symbol` as the honest fallback — with `bbox_px`,
-`center_px`, `width_px`/`width_mm` (along the wall), `wall_id`,
-`connects`, `raw_text` (nearby code like `"C1"`), and `swing`/`hinge_px`
-(only when arc pixel-evidence exists).
+Every result is a validated `FloorPlan` document:
 
-`Element` (free-standing): `stair`, `railing`, `elevator`, `escalator`,
-`equipment_platform`, `column`, `chimney`, `unknown_symbol` — with
-`bbox_px` and the containing `room_id`. Elements found only by the VLM
-carry approximate bounding-box geometry and `source: "vlm"`.
+```text
+FloorPlan
+├── source_file, source_sha256, page
+├── image_width_px, image_height_px, north_angle_deg
+├── scale
+│   ├── px_per_mm_x, px_per_mm_y, anisotropy
+│   └── method, confidence, evidence counts
+├── rooms[]
+│   ├── name, room_type, source, confidence
+│   ├── polygon_px, area_px, perimeter_px, edge_lengths_px
+│   ├── polygon_mm, area_sqm, perimeter_mm, edge_lengths_mm
+│   └── printed_area_sqm, area_deviation, area_deviation_flag
+├── walls[]
+│   ├── start_px, end_px, thickness_px
+│   ├── start_mm, end_mm, thickness_mm
+│   └── rooms
+├── openings[]
+│   ├── element_type, bbox_px, center_px, width_px, width_mm
+│   ├── wall_id, connects, swing, hinge_px
+│   └── source, confidence
+├── elements[]
+├── warnings[]
+└── unresolved[]
+```
 
-The element vocabulary follows the `tecton_v1_mapping` naming for common
-Chinese residential legend symbols (doors B20–B24, windows B28–B35,
-circulation B36–B42).
+Key rules:
+
+- Pixel coordinates use the original input image. The origin is the top-left;
+  x points right and y points down.
+- Polygon rings are open: the first point is not repeated at the end.
+- If `scale` is `null`, all millimetre and square-metre fields are `null`.
+- `warnings` records degraded or conflicting evidence.
+- `unresolved` names fields that could not be established from the drawing.
+
+See [`schema.py`](src/roomify/schema.py) for the complete field and enum
+definitions.
 
 ## How it works
 
-1. **Load** (`io.py`) — image or PDF → working BGR image (≤2000 px);
-   original-pixel coordinates are restored at assembly.
-2. **Walls** (`walls.py`) — the wall-grey band is auto-estimated from the
-   histogram of low-chroma pixels (never hard-coded: real-world corpora
-   put walls anywhere from near-black to `#999`), then intersected with a
-   stroke-thickness test (`distanceTransform`) so 1 px dimension lines and
-   text vanish; a parallel thin-line mask (adaptive threshold ∧ long H/V
-   runs, gated to the footprint) keeps door sills and window strokes.
-3. **Rooms** (`rooms.py`) — enclosed voids of the combined mask via
-   contour-hierarchy holes; a fallback ladder of directional closings
-   handles plans without sill strokes; polygons are cleaned by a
-   conjunctive collinear-merge (near-straight **and** short-edge) and
-   follow the **inner-face (net floor area)** convention that printed ㎡
-   labels use.
-4. **VLM calls** (`vlm.py`) — three calls, marker-keyed, JSON-mode,
-   Pydantic-validated with one error-echo retry each: ① footprint +
-   dimension chains + north; ② room semantics over a numbered overlay
-   (plus `extra_rooms` recall for anything CV missed); ③ opening
-   classification over a lettered overlay + magnified crops (chunked and
-   parallelized).
-5. **Merge & calibrate** (`merge.py`) — id-keyed fusion, per-axis scale,
-   deviation flags, junk filters.
-6. **Openings & walls** (`openings.py`) — wall segments are derived from
-   room-polygon adjacency; openings are wall-absent intervals scanned
-   along each segment (plus a window-stroke signal for windows drawn on
-   unbroken walls); swing arcs are detected as tinted quarter-disc sectors
-   or stroked arcs, compared strictly within the room they open into.
+1. Load the image or PDF and keep a mapping back to its original pixels.
+2. Detect walls, enclosed rooms, and wall openings with computer vision.
+3. Send numbered overlays to the VLM for room labels, printed areas,
+   dimensions, and symbol classes.
+4. Merge both sources, solve the x/y scale, and validate the result with
+   Pydantic.
 
-## Accuracy (reference corpus)
+Geometry does not depend on a successful VLM call. Failed calls produce a
+warning and leave the affected fields unresolved.
 
-On the two reference listing plans (686×706 / 708×708 px, JPEG-derived):
+## Current scope
 
-- 9/9 and 10/10 rooms detected; all room names correct; computed areas
-  within **±1.4%** and **±4.4%** of the printed values (no false
-  deviation flags).
-- Scale confidence `high`, anisotropy (+11%) fully resolved.
-- All doors/windows/passages surfaced as openings; the plan that draws no
-  swing arcs yields **zero** swing claims; the plan with tinted arcs
-  yields swings on its doors.
-
-## Limitations (v1)
-
-- Tuned for residential plans with solid-fill (poché) walls; pure
-  line-drawing CAD walls survive via the thin-line path but with less
-  redundancy. Colored walls fall back to a wide band (`warnings:
-  wall_band_fallback`).
-- Wide-open passages between spaces that are drawn with *no* separating
-  strokes at all are treated as one room (matching the drawing).
-- `bay_window` protrusion polygons are not measured yet
-  (`protrusion_polygon_px` stays `null`; classification still works).
-- Exterior wall centerlines are approximated at the room's inner face
-  (sub-thickness bias).
-- One VLM misread of a printed area is tolerated by the median-based
-  calibration but will surface as that room's `area_deviation`.
+- Best results come from residential plans with solid-filled walls.
+- Thin-line CAD plans use a simpler fallback path.
+- Spaces without any separating stroke are returned as one room.
+- Bay-window protrusion polygons are not measured yet.
+- Exterior wall centerlines use the room's inner face in this release.
 
 ## Development
 
 ```bash
-uv venv && uv pip install -e ".[dev]"
-uv run pytest                      # unit tests: no VLM, no fixtures needed
-uv run pytest tests/integration    # live acceptance (needs credentials + example images)
+uv sync --extra dev
+uv run pytest
 uv run ruff check src tests
+uv run mypy src
 ```
 
-Integration tests are double-gated on `ROOMIFY_EXAMPLES_DIR` (real plans
-are not committed to the repo) and `ROOMIFY_VLM_API_KEY`.
+Live VLM acceptance tests use the bundled example and require the three VLM
+environment variables:
+
+```bash
+uv run pytest tests/integration
+```
 
 ## License
 
-Apache-2.0.
+[Apache-2.0](LICENSE)

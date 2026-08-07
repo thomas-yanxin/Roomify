@@ -1,8 +1,8 @@
 """End-to-end acceptance on real listing floor plans.
 
-Double-gated: needs the example images (ROOMIFY_EXAMPLES_DIR) and live VLM
-credentials — skipped otherwise. These are the project's acceptance bar,
-not unit tests; they spend real VLM calls and minutes of wall time.
+The first plan is bundled under examples/. A second plan can be supplied via
+ROOMIFY_EXAMPLES_DIR. Live VLM credentials are always required; these tests
+spend real calls and minutes of wall time.
 """
 
 import json
@@ -11,7 +11,8 @@ from pathlib import Path
 
 import pytest
 
-EXAMPLES = Path(os.environ.get("ROOMIFY_EXAMPLES_DIR", "/home/yons/thomas/poche/examples"))
+DEFAULT_EXAMPLES = Path(__file__).resolve().parents[2] / "examples"
+EXAMPLES = Path(os.environ.get("ROOMIFY_EXAMPLES_DIR", DEFAULT_EXAMPLES))
 FIXTURE = Path(__file__).parent.parent / "fixtures" / "fp1_expected.json"
 
 pytestmark = [
@@ -90,6 +91,10 @@ def test_fp1_document_valid_json(fp1_plan):
     assert fp1_plan.north_angle_deg == 0
 
 
+@pytest.mark.skipif(
+    not (EXAMPLES / "floorplan-2.png").exists(),
+    reason="second example floor plan not available",
+)
 def test_fp2_full_parse():
     from roomify import parse
 
