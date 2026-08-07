@@ -158,7 +158,7 @@ class Wall(StrictModel):
     start_px: Point
     end_px: Point
     thickness_px: float = Field(gt=0)
-    rooms: tuple[str, str]  # room ids, or "exterior" on the outside
+    rooms: tuple[str, str]  # room ids, "exterior", or uncovered interior "unknown"
     start_mm: Point | None = None
     end_mm: Point | None = None
     thickness_mm: float | None = None
@@ -254,7 +254,7 @@ class FloorPlan(StrictModel):
         room_ids = {r.id for r in self.rooms}
         wall_ids = {w.id for w in self.walls}
         for wall in self.walls:
-            unknown = set(wall.rooms) - room_ids - {EXTERIOR}
+            unknown = set(wall.rooms) - room_ids - {EXTERIOR, UNKNOWN}
             if unknown:
                 raise ValueError(f"wall {wall.id} references unknown rooms: {sorted(unknown)}")
         for opening in self.openings:

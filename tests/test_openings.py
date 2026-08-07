@@ -3,7 +3,7 @@ import pytest
 
 from conftest import WALL_GREY, blank, draw_gap, draw_sill, draw_wall_rect
 from roomify.merge import merge_rooms
-from roomify.openings import find_openings
+from roomify.openings import derive_wall_segments, find_openings
 from roomify.rooms import detect_rooms
 from roomify.walls import extract_walls
 
@@ -103,3 +103,17 @@ def test_wall_segments_shared_and_exterior():
     assert any("exterior" in s.rooms for s in segments)
     divider = shared[0]
     assert abs(divider.start[0] - 300) < 8 and abs(divider.end[0] - 300) < 8
+
+
+def test_unmatched_internal_wall_is_unknown():
+    img = _two_room_plan()
+    wx, drafts = _drafts(img)
+    left_room = [draft for draft in drafts if draft.seed[0] < 300]
+    segments = derive_wall_segments(left_room, wx)
+    divider = [
+        segment
+        for segment in segments
+        if abs((segment.start[0] + segment.end[0]) / 2 - 300) < 10
+    ]
+    assert divider
+    assert all("unknown" in segment.rooms for segment in divider)

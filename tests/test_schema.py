@@ -125,6 +125,19 @@ def test_exterior_is_a_valid_reference():
     assert _plan(walls=[wall]).walls[0].rooms == ("room_1", "exterior")
 
 
+def test_unknown_is_a_valid_wall_reference():
+    wall = Wall(
+        id="wall_1",
+        start_px=Point(x=0, y=0),
+        end_px=Point(x=100, y=0),
+        thickness_px=8.0,
+        rooms=("room_1", "unknown"),
+        source="cv",
+        confidence=0.8,
+    )
+    assert _plan(walls=[wall]).walls[0].rooms == ("room_1", "unknown")
+
+
 def test_mm_fields_require_scale():
     with pytest.raises(ValidationError, match="without scale"):
         _plan(rooms=[_room(area_sqm=9.6)])

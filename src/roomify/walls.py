@@ -93,6 +93,10 @@ def extract_walls(bgr: np.ndarray) -> WallExtraction:
     if footprint is None:
         footprint = _bbox(lines) or (0, 0, w - 1, h - 1)
         lines = _thin_lines(gray, footprint)
+        if lines.any():
+            # Thin-line/CAD plans have no solid core, but downstream wall
+            # geometry still requires a positive raster stroke width.
+            thickness = 1.0
 
     union = cv2.bitwise_or(solid, lines)
     return WallExtraction(

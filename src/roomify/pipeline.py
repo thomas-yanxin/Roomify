@@ -290,6 +290,24 @@ def _assemble(
         )
 
     room_ids: list[str] = [f"room_{i + 1}" for i in range(len(rooms))]
+    opening_ids: list[str] = [f"op_{i + 1}" for i in range(len(opening_drafts))]
+    ids_by_collection: dict[str, dict[str | None, str]] = {
+        "rooms": {draft.marker: room_ids[i] for i, draft in enumerate(rooms)},
+        "openings": {draft.marker: opening_ids[i] for i, draft in enumerate(opening_drafts)},
+    }
+    marker_to_id = ids_by_collection["rooms"] | ids_by_collection["openings"]
+    warnings = [
+        warning.model_copy(update={"ref": marker_to_id.get(warning.ref, warning.ref)})
+        for warning in warnings
+    ]
+    remapped_unresolved: list[Unresolved] = []
+    for item in unresolved:
+        parts = item.path.split("/", 2)
+        if len(parts) == 3 and parts[0] in ids_by_collection:
+            parts[1] = ids_by_collection[parts[0]].get(parts[1], parts[1])
+        remapped_unresolved.append(item.model_copy(update={"path": "/".join(parts)}))
+    unresolved = remapped_unresolved
+
     schema_rooms: list[Room] = []
     for i, draft in enumerate(rooms):
         ring = draft.polygon
@@ -386,7 +404,7 @@ def _assemble(
             )
         schema_openings.append(
             Opening(
-                id=f"op_{i + 1}",
+                id=opening_ids[i],
                 element_type=op.element_type,  # type: ignore[arg-type]
                 raw_text=op.raw_text,
                 bbox_px=BBox(x0=x0 * f, y0=y0 * f, x1=x1 * f, y1=y1 * f),

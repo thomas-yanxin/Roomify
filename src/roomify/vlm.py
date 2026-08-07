@@ -351,9 +351,12 @@ def render_room_overlay(bgr: np.ndarray, rooms: list[CVRoom]) -> np.ndarray:
     for i, room in enumerate(rooms, start=1):
         cx, cy = room.seed
         # Nudge the marker up so it doesn't cover the label text at the
-        # room's center; clamp to stay inside the image.
+        # room's center, but keep it inside the detected room.
         mx = int(min(max(cx, radius + 1), w - radius - 1))
         my = int(min(max(cy - 2 * radius, radius + 1), h - radius - 1))
+        contour = room.polygon.astype(np.float32)
+        if cv2.pointPolygonTest(contour, (mx, my), True) < radius:
+            mx, my = int(round(cx)), int(round(cy))
         cv2.circle(out, (mx, my), radius, (0, 255, 255), -1)
         cv2.circle(out, (mx, my), radius, (0, 0, 0), 2)
         label = str(i)

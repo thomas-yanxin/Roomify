@@ -155,6 +155,21 @@ def test_scale_chains_only_prefers_longest_span():
     assert scale.n_rooms_used == 0
 
 
+def test_scale_combines_one_axis_chain_with_printed_areas():
+    walls = _walls(footprint=(0, 0, 409, 509), thickness=9.0)
+    scale, warnings = estimate_scale(
+        [ChainRead(side="top", values_mm=[10_000])],
+        walls,
+        _fp1_rooms(sx=0.04, sy=0.05),
+    )
+    assert scale is not None
+    assert scale.method == "dimension_chains+printed_areas"
+    assert scale.px_per_mm_x == pytest.approx(0.04)
+    assert scale.px_per_mm_y == pytest.approx(0.05)
+    assert scale.n_chain_values_used == 1
+    assert not warnings
+
+
 def test_scale_areas_only_assumes_isotropy():
     scale, warnings = estimate_scale([], _walls(), _fp1_rooms(sx=0.045, sy=0.045))
     assert scale is not None

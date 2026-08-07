@@ -269,6 +269,28 @@ def estimate_scale(
             warnings,
         )
 
+    if area_scale_sq and (x_candidates or y_candidates):
+        # One measured axis plus the area-scale product determines the
+        # missing axis; do not throw away anisotropy evidence.
+        if x_candidates:
+            sx, nx = min(x_candidates, key=lambda c: c[0])
+            sy, ny = area_scale_sq / sx, 0
+        else:
+            sy, ny = min(y_candidates, key=lambda c: c[0])
+            sx, nx = area_scale_sq / sy, 0
+        return (
+            ScaleDraft(
+                px_per_mm_x=sx,
+                px_per_mm_y=sy,
+                method="dimension_chains+printed_areas",
+                confidence="medium" if len(ratios) >= 5 else "low",
+                px_per_mm_from_areas=from_areas,
+                n_rooms_used=len(ratios),
+                n_chain_values_used=nx + ny,
+            ),
+            warnings,
+        )
+
     if from_areas:
         warnings.append(
             ParseWarning(

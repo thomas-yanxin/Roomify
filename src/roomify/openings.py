@@ -152,7 +152,7 @@ def _scan_segment(
     if coverage.size == 0:
         return []
 
-    connects = _resolve_connects(seg, walls, room_masks, axis, c)
+    connects = _resolve_connects(seg, walls, room_masks)
     runs = _absent_runs(coverage, min_len, max_len)
     # Windows do not always interrupt the wall: some plans draw the window
     # box ON a continuous wall run. Multi-stroke intervals in the lines mask
@@ -249,8 +249,6 @@ def _resolve_connects(
     seg: WallSegment,
     walls: WallExtraction,
     room_masks: list[np.ndarray | None],
-    axis: str,
-    c: int,
 ) -> tuple[int | str, int | str]:
     """Room indices pass through; the non-room side of a leftover edge is
     "exterior" only when it actually leaves the footprint — otherwise it is
@@ -263,13 +261,15 @@ def _resolve_connects(
     (sx0, sy0), (sx1, sy1) = seg.start, seg.end
     mid = ((sx0 + sx1) / 2, (sy0 + sy1) / 2)
     probe_distance = 2.5 * seg.thickness_px
+    dx, dy = sx1 - sx0, sy1 - sy0
+    length = float(np.hypot(dx, dy))
+    normal = (-dy / length, dx / length) if length else (0.0, 0.0)
     direction = None
     if mask is not None:
         for sign in (1, -1):
             px, py = (
-                (mid[0], mid[1] + sign * probe_distance)
-                if axis == "h"
-                else (mid[0] + sign * probe_distance, mid[1])
+                mid[0] + sign * normal[0] * probe_distance,
+                mid[1] + sign * normal[1] * probe_distance,
             )
             xi, yi = int(round(px)), int(round(py))
             if 0 <= yi < mask.shape[0] and 0 <= xi < mask.shape[1] and mask[yi, xi]:
@@ -279,9 +279,8 @@ def _resolve_connects(
         far: int | str = UNKNOWN
     else:
         fx, fy = (
-            (mid[0], mid[1] + direction * probe_distance)
-            if axis == "h"
-            else (mid[0] + direction * probe_distance, mid[1])
+            mid[0] + direction * normal[0] * probe_distance,
+            mid[1] + direction * normal[1] * probe_distance,
         )
         x0, y0, x1, y1 = walls.footprint
         inside_footprint = x0 + 2 <= fx <= x1 - 2 and y0 + 2 <= fy <= y1 - 2
@@ -550,6 +549,7 @@ def derive_wall_segments(
     bias that is acceptable for v1.
     """
     t = walls.thickness_px
+    room_masks = _room_masks(rooms, walls.solid.shape)
     edges = []  # (room_idx, axis, fixed_coord, lo, hi)
     diagonals: list[WallSegment] = []
     for idx, room in enumerate(rooms):
@@ -592,7 +592,9 @@ def derive_wall_segments(
         for lo, hi in _subtract_intervals((lo_i, hi_i), shared):
             if hi - lo >= max(6.0, 1.5 * t):
                 segments.append(_segment(axis, coord_i, lo, hi, t, (room_i, EXTERIOR)))
-    return segments
+    return [
+        replace(seg, rooms=_resolve_connects(seg, walls, room_masks)) for seg in segments
+    ]
 
 
 def _segment(

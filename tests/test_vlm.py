@@ -130,3 +130,19 @@ def test_room_overlay_draws_markers():
     assert (out != bgr).any()
     ys, xs = np.where((out[:, :, 2] == 255) & (out[:, :, 1] == 255) & (out[:, :, 0] == 0))
     assert ys.size > 0 and ys.mean() < 100  # marker sits above the seed
+
+
+def test_room_overlay_keeps_marker_inside_narrow_room():
+    bgr = np.full((700, 700, 3), 245, np.uint8)
+    room = CVRoom(
+        polygon=np.array([[100.0, 100.0], [500.0, 100.0], [500.0, 120.0], [100.0, 120.0]]),
+        area_px=8000.0,
+        perimeter_px=840.0,
+        edge_lengths_px=[400.0, 20.0, 400.0, 20.0],
+        seed=(300.0, 110.0),
+    )
+    out = render_room_overlay(bgr, [room])
+    yellow = (out[:, :, 2] == 255) & (out[:, :, 1] == 255) & (out[:, :, 0] == 0)
+    ys = np.where(yellow)[0]
+    assert ys.size > 0
+    assert 100 <= ys.mean() <= 120

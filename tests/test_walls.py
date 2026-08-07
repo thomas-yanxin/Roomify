@@ -65,4 +65,5 @@ def test_fallback_band_no_crash():
     wx = extract_walls(img)
     assert wx.solid.sum() == 0
     assert wx.lines.any()
+    assert wx.thickness_px == 1.0
     assert wx.footprint[2] > wx.footprint[0]
