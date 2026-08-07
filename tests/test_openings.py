@@ -1,9 +1,15 @@
 import cv2
+import numpy as np
 import pytest
 
 from conftest import WALL_GREY, blank, draw_gap, draw_sill, draw_wall_rect
-from roomify.merge import merge_rooms
-from roomify.openings import derive_wall_segments, find_openings
+from roomify.merge import RoomDraft, merge_rooms
+from roomify.openings import (
+    WallSegment,
+    derive_wall_segments,
+    find_openings,
+    measure_bay_protrusion,
+)
 from roomify.rooms import detect_rooms
 from roomify.walls import extract_walls
 
@@ -105,15 +111,60 @@ def test_wall_segments_shared_and_exterior():
     assert abs(divider.start[0] - 300) < 8 and abs(divider.end[0] - 300) < 8
 
 
+def test_exterior_segments_use_wall_center_not_inner_face():
+    img = blank()
+    draw_wall_rect(img, 100, 100, 500, 400, thickness=10)
+    wx, drafts = _drafts(img)
+
+    segments = derive_wall_segments(drafts, wx)
+
+    exterior = [segment for segment in segments if "exterior" in segment.rooms]
+    fixed = [
+        (segment.start[1] + segment.end[1]) / 2
+        for segment in exterior
+        if abs(segment.end[0] - segment.start[0]) > 300
+    ] + [
+        (segment.start[0] + segment.end[0]) / 2
+        for segment in exterior
+        if abs(segment.end[1] - segment.start[1]) > 200
+    ]
+    assert sorted(fixed) == pytest.approx([100, 100, 400, 500], abs=2)
+
+
+def test_bay_protrusion_measured_from_outer_and_side_strokes():
+    img = blank()
+    draw_wall_rect(img, 100, 100, 500, 400, thickness=10)
+    cv2.line(img, (180, 100), (190, 60), (80,) * 3, 1)
+    cv2.line(img, (190, 60), (250, 60), (80,) * 3, 1)
+    cv2.line(img, (250, 60), (260, 100), (80,) * 3, 1)
+    walls = extract_walls(img)
+    ring = np.array([[106.0, 106.0], [494.0, 106.0], [494.0, 394.0], [106.0, 394.0]])
+    room = RoomDraft(
+        polygon=ring,
+        area_px=388 * 288,
+        perimeter_px=2 * (388 + 288),
+        edge_lengths_px=[388, 288, 388, 288],
+        seed=(300, 250),
+        source="cv",
+        confidence=0.8,
+    )
+    segment = WallSegment((180, 100), (260, 100), walls.thickness_px, (0, "exterior"))
+
+    polygon = measure_bay_protrusion(segment, (180, 94, 260, 106), walls, [room], img)
+
+    assert polygon is not None
+    assert [point[1] for point in polygon[:2]] == pytest.approx([100, 100], abs=1)
+    assert [point[1] for point in polygon[2:]] == pytest.approx([60, 60], abs=4)
+    assert [point[0] for point in polygon[2:]] == pytest.approx([250, 190], abs=4)
+
+
 def test_unmatched_internal_wall_is_unknown():
     img = _two_room_plan()
     wx, drafts = _drafts(img)
     left_room = [draft for draft in drafts if draft.seed[0] < 300]
     segments = derive_wall_segments(left_room, wx)
     divider = [
-        segment
-        for segment in segments
-        if abs((segment.start[0] + segment.end[0]) / 2 - 300) < 10
+        segment for segment in segments if abs((segment.start[0] + segment.end[0]) / 2 - 300) < 10
     ]
     assert divider
     assert all("unknown" in segment.rooms for segment in divider)

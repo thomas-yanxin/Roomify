@@ -45,7 +45,7 @@ Selected fields from the full output:
 
 ```json
 {
-  "schema_version": "1.0",
+  "schema_version": "1.2",
   "scale": {
     "px_per_mm_x": 0.0431736218444101,
     "px_per_mm_y": 0.048002053563788824,
@@ -119,7 +119,8 @@ uv run roomify examples/floorplan-1.png -o plan.json
 
 Images and PDFs are supported. Use `--page N` for a PDF page, `--no-vlm` for
 CV-only parsing, and `--debug DIR` to save the masks and overlays used by the
-pipeline. If you used the pip fallback and activated `.venv`, omit `uv run`.
+pipeline. Metric `nodes` and `rootNodeIds` are populated when calibration
+succeeds. If you used the pip fallback and activated `.venv`, omit `uv run`.
 
 ### Python
 
@@ -132,7 +133,7 @@ print(plan.rooms[0].name)       # 客厅
 print(plan.rooms[0].area_sqm)   # 37.33987625081361
 print(plan.scale.confidence)    # high
 
-plan.model_dump_json(indent=2)
+plan.model_dump_json(indent=2)  # Complete Roomify JSON, including nodes/rootNodeIds
 ```
 
 For pixel geometry without VLM calls:
@@ -162,7 +163,7 @@ Every result is a validated `FloorPlan` document:
 ```text
 FloorPlan
 ├── source_file, source_sha256, page
-├── image_width_px, image_height_px, north_angle_deg
+├── image_width_px, image_height_px, north_angle_deg, level_height_mm
 ├── scale
 │   ├── px_per_mm_x, px_per_mm_y, anisotropy
 │   └── method, confidence, evidence counts
@@ -177,11 +178,14 @@ FloorPlan
 │   └── rooms
 ├── openings[]
 │   ├── element_type, bbox_px, center_px, width_px, width_mm
-│   ├── wall_id, connects, swing, hinge_px
+│   ├── sill_height_mm, height_mm, wall_id, connects, swing, hinge_px
+│   ├── protrusion_polygon_px, protrusion_polygon_mm
 │   └── source, confidence
 ├── elements[]
 ├── warnings[]
-└── unresolved[]
+├── unresolved[]
+├── nodes{} (metric node graph; empty without scale)
+└── rootNodeIds[] (graph roots; empty without scale)
 ```
 
 Key rules:
@@ -189,7 +193,11 @@ Key rules:
 - Pixel coordinates use the original input image. The origin is the top-left;
   x points right and y points down.
 - Polygon rings are open: the first point is not repeated at the end.
-- If `scale` is `null`, all millimetre and square-metre fields are `null`.
+- If `scale` is `null`, image-derived planar millimetre and square-metre fields
+  are `null`; the documented vertical defaults remain present.
+- When the 2D drawing has no elevations, defaults are 2800mm storey height,
+  2100mm doors, and 900/1500mm window sill/height. CLI flags and `parse()`
+  keyword arguments override them.
 - `warnings` records degraded or conflicting evidence.
 - `unresolved` names fields that could not be established from the drawing.
 
@@ -225,8 +233,8 @@ thinking enabled.
 - Best results come from residential plans with solid-filled walls.
 - Thin-line CAD plans use a simpler fallback path.
 - Spaces without any separating stroke are returned as one room.
-- Bay-window protrusion polygons are not measured yet.
-- Exterior wall centerlines use the room's inner face in this release.
+- Bay windows require visible outer and side strokes; incomplete evidence stays
+  unresolved instead of receiving an invented depth.
 
 ## Development
 

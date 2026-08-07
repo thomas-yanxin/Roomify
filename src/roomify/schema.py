@@ -10,21 +10,25 @@ Conventions:
   Edge ``i`` runs from vertex ``i`` to vertex ``(i + 1) % n`` — the closing
   edge is implicit.
 - ``scale is None`` exactly when no calibration source (dimension chains or
-  printed room areas) was readable; every mm/sqm field is then None too, and
-  the pixel geometry remains fully usable.
+  printed room areas) was readable; image-derived mm/sqm fields are then None,
+  while the documented vertical defaults remain usable.
 - Facts that are not observable in the drawing are ``None`` and listed under
-  ``unresolved`` — they are never guessed (e.g. door swing on plans that draw
-  no swing arc).
+  ``unresolved`` — except the documented vertical defaults needed to lift a
+  2D plan into a usable 3D scene.
 """
 
 from __future__ import annotations
 
 import math
-from typing import Literal, Self
+from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-SCHEMA_VERSION = "1.0"
+SCHEMA_VERSION = "1.2"
+DEFAULT_LEVEL_HEIGHT_MM = 2800.0
+DEFAULT_DOOR_HEIGHT_MM = 2100.0
+DEFAULT_WINDOW_SILL_HEIGHT_MM = 900.0
+DEFAULT_WINDOW_HEIGHT_MM = 1500.0
 
 # Element vocabulary follows the tecton_v1_mapping naming of common Chinese
 # residential floor-plan legend symbols (doors B20-B24, windows B28-B35,
@@ -184,6 +188,8 @@ class Opening(StrictModel):
     center_px: Point
     width_px: float = Field(gt=0)  # opening length along the wall
     width_mm: float | None = None
+    sill_height_mm: float | None = Field(default=None, ge=0)
+    height_mm: float | None = Field(default=None, gt=0)
     wall_id: str | None = None
     connects: tuple[str, str] | None = None  # room ids, "exterior", or "unknown"
     # Swing facts come exclusively from swing-arc pixel evidence. Plans that
@@ -191,6 +197,7 @@ class Opening(StrictModel):
     swing: Literal["clockwise", "counterclockwise"] | None = None
     hinge_px: Point | None = None
     protrusion_polygon_px: list[Point] | None = None  # bay windows
+    protrusion_polygon_mm: list[Point] | None = None
     source: Source
     confidence: float = Field(ge=0, le=1)
 
@@ -198,6 +205,33 @@ class Opening(StrictModel):
     def _ring_open(self) -> Self:
         if self.protrusion_polygon_px is not None:
             _validate_open_ring(self.protrusion_polygon_px, f"opening {self.id}")
+        if self.protrusion_polygon_mm is not None:
+            _validate_open_ring(self.protrusion_polygon_mm, f"opening {self.id}")
+
+        is_door = self.element_type == "passage" or self.element_type.endswith("_door")
+        is_window = self.element_type == "window" or self.element_type.endswith("_window")
+        if is_door:
+            self.sill_height_mm = 0.0 if self.sill_height_mm is None else self.sill_height_mm
+            self.height_mm = DEFAULT_DOOR_HEIGHT_MM if self.height_mm is None else self.height_mm
+        elif is_window:
+            self.sill_height_mm = (
+                (
+                    0.0
+                    if self.element_type == "floor_to_ceiling_window"
+                    else DEFAULT_WINDOW_SILL_HEIGHT_MM
+                )
+                if self.sill_height_mm is None
+                else self.sill_height_mm
+            )
+            self.height_mm = (
+                (
+                    DEFAULT_LEVEL_HEIGHT_MM
+                    if self.element_type == "floor_to_ceiling_window"
+                    else DEFAULT_WINDOW_HEIGHT_MM
+                )
+                if self.height_mm is None
+                else self.height_mm
+            )
         return self
 
 
@@ -225,7 +259,7 @@ class Unresolved(StrictModel):
 
 
 class FloorPlan(StrictModel):
-    schema_version: Literal["1.0"] = "1.0"
+    schema_version: Literal["1.0", "1.1", "1.2"] = SCHEMA_VERSION  # type: ignore[assignment]
     source_file: str
     source_sha256: str
     page: int | None = None  # PDF page index; None for images
@@ -234,6 +268,7 @@ class FloorPlan(StrictModel):
     units: Literal["mm"] = "mm"
     coordinate_system: Literal["x_right_y_down_origin_top_left"] = "x_right_y_down_origin_top_left"
     north_angle_deg: float | None = None  # 0 = up, clockwise; None if no north arrow
+    level_height_mm: float = Field(default=DEFAULT_LEVEL_HEIGHT_MM, gt=0)
     scale: Scale | None
     rooms: list[Room]
     walls: list[Wall]
@@ -241,6 +276,9 @@ class FloorPlan(StrictModel):
     elements: list[Element]
     warnings: list[ParseWarning]
     unresolved: list[Unresolved]
+    # The metric node graph stays empty when no scale is known.
+    nodes: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    rootNodeIds: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _cross_references(self) -> Self:
@@ -291,3 +329,15 @@ class FloorPlan(StrictModel):
                 raise ValueError(f"opening {opening.id}: scale is set but width_mm is missing")
             if not want and opening.width_mm is not None:
                 raise ValueError(f"opening {opening.id}: width_mm present without scale")
+            if (
+                want
+                and opening.protrusion_polygon_px is not None
+                and opening.protrusion_polygon_mm is None
+            ):
+                raise ValueError(
+                    f"opening {opening.id}: scale is set but protrusion_polygon_mm is missing"
+                )
+            if not want and opening.protrusion_polygon_mm is not None:
+                raise ValueError(
+                    f"opening {opening.id}: protrusion_polygon_mm present without scale"
+                )

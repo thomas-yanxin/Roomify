@@ -184,6 +184,23 @@ def test_swing_defaults_absent_not_invented():
     plan = _plan(openings=[opening])
     assert plan.openings[0].swing is None
     assert plan.openings[0].hinge_px is None
+    assert plan.openings[0].sill_height_mm == 0
+    assert plan.openings[0].height_mm == 2100
+
+
+def test_window_vertical_defaults():
+    opening = Opening(
+        id="op_1",
+        element_type="window",
+        bbox_px=BBox(x0=10, y0=0, x1=50, y1=10),
+        center_px=Point(x=30, y=5),
+        width_px=40.0,
+        source="cv+vlm",
+        confidence=0.7,
+    )
+
+    assert opening.sill_height_mm == 900
+    assert opening.height_mm == 1500
 
 
 def test_warning_shape():

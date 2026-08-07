@@ -5,6 +5,13 @@ from __future__ import annotations
 import argparse
 import sys
 
+from roomify.schema import (
+    DEFAULT_DOOR_HEIGHT_MM,
+    DEFAULT_LEVEL_HEIGHT_MM,
+    DEFAULT_WINDOW_HEIGHT_MM,
+    DEFAULT_WINDOW_SILL_HEIGHT_MM,
+)
+
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
@@ -20,19 +27,32 @@ def main(argv: list[str] | None = None) -> int:
         help="CV only: pixel geometry without names/types/mm",
     )
     parser.add_argument("--debug", metavar="DIR", help="write per-stage debug overlays")
+    parser.add_argument("--level-height-mm", type=float, default=DEFAULT_LEVEL_HEIGHT_MM)
+    parser.add_argument("--door-height-mm", type=float, default=DEFAULT_DOOR_HEIGHT_MM)
+    parser.add_argument(
+        "--window-sill-height-mm", type=float, default=DEFAULT_WINDOW_SILL_HEIGHT_MM
+    )
+    parser.add_argument("--window-height-mm", type=float, default=DEFAULT_WINDOW_HEIGHT_MM)
     args = parser.parse_args(argv)
 
     from roomify.pipeline import parse
 
     try:
         plan = parse(
-            args.input, page=args.page, use_vlm=not args.no_vlm, debug_dir=args.debug
+            args.input,
+            page=args.page,
+            use_vlm=not args.no_vlm,
+            debug_dir=args.debug,
+            level_height_mm=args.level_height_mm,
+            door_height_mm=args.door_height_mm,
+            window_sill_height_mm=args.window_sill_height_mm,
+            window_height_mm=args.window_height_mm,
         )
+        payload = plan.model_dump_json(indent=2)
     except (ValueError, FileNotFoundError) as exc:
         print(f"roomify: {exc}", file=sys.stderr)
         return 1
 
-    payload = plan.model_dump_json(indent=2)
     if args.output:
         with open(args.output, "w", encoding="utf-8") as fh:
             fh.write(payload + "\n")

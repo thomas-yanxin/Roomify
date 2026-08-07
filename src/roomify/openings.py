@@ -262,31 +262,37 @@ def _resolve_connects(
     (sx0, sy0), (sx1, sy1) = seg.start, seg.end
     mid = ((sx0 + sx1) / 2, (sy0 + sy1) / 2)
     probe_distance = 2.5 * seg.thickness_px
-    dx, dy = sx1 - sx0, sy1 - sy0
-    length = float(np.hypot(dx, dy))
-    normal = (-dy / length, dx / length) if length else (0.0, 0.0)
-    direction = None
-    if mask is not None:
-        for sign in (1, -1):
-            px, py = (
-                mid[0] + sign * normal[0] * probe_distance,
-                mid[1] + sign * normal[1] * probe_distance,
-            )
-            xi, yi = int(round(px)), int(round(py))
-            if 0 <= yi < mask.shape[0] and 0 <= xi < mask.shape[1] and mask[yi, xi]:
-                direction = -sign  # wall body is opposite the room
-                break
-    if direction is None:
+    outward = _room_outward_normal(seg, mask)
+    if outward is None:
         far: int | str = UNKNOWN
     else:
         fx, fy = (
-            mid[0] + direction * normal[0] * probe_distance,
-            mid[1] + direction * normal[1] * probe_distance,
+            mid[0] + outward[0] * probe_distance,
+            mid[1] + outward[1] * probe_distance,
         )
         x0, y0, x1, y1 = walls.footprint
         inside_footprint = x0 + 2 <= fx <= x1 - 2 and y0 + 2 <= fy <= y1 - 2
         far = UNKNOWN if inside_footprint else EXTERIOR
     return (room, far) if isinstance(seg.rooms[0], int) else (far, room)
+
+
+def _room_outward_normal(seg: WallSegment, mask: np.ndarray | None) -> np.ndarray | None:
+    if mask is None:
+        return None
+    (sx0, sy0), (sx1, sy1) = seg.start, seg.end
+    dx, dy = sx1 - sx0, sy1 - sy0
+    length = float(np.hypot(dx, dy))
+    if length == 0:
+        return None
+    normal = np.array([-dy / length, dx / length])
+    mid = np.array([(sx0 + sx1) / 2, (sy0 + sy1) / 2])
+    probe_distance = 2.5 * seg.thickness_px
+    for sign in (1, -1):
+        px, py = mid + sign * normal * probe_distance
+        xi, yi = int(round(px)), int(round(py))
+        if 0 <= yi < mask.shape[0] and 0 <= xi < mask.shape[1] and mask[yi, xi]:
+            return -sign * normal
+    return None
 
 
 def _dedupe(candidates: list[OpeningCandidate], thickness: float) -> list[OpeningCandidate]:
@@ -545,9 +551,8 @@ def derive_wall_segments(
     edge pairs merge into one shared segment on the centerline; leftover
     edge intervals face the exterior or uncovered circulation space.
     Diagonal edges are emitted as-is (rare in the domain; refine when a
-    corpus needs it). Exterior leftovers are emitted on the room's inner
-    face — the true centerline sits half a wall outward, a sub-thickness
-    bias that is acceptable for v1.
+    corpus needs it). Exterior leftovers move half a measured wall thickness
+    outward and extend at both ends so adjacent facade centerlines still meet.
     """
     t = walls.thickness_px
     room_masks = _room_masks(rooms, walls.solid.shape)
@@ -593,9 +598,150 @@ def derive_wall_segments(
         for lo, hi in _subtract_intervals((lo_i, hi_i), shared):
             if hi - lo >= max(6.0, 1.5 * t):
                 segments.append(_segment(axis, coord_i, lo, hi, t, (room_i, EXTERIOR)))
-    return [
-        replace(seg, rooms=_resolve_connects(seg, walls, room_masks)) for seg in segments
-    ]
+    resolved = [replace(seg, rooms=_resolve_connects(seg, walls, room_masks)) for seg in segments]
+    return [_center_exterior_segment(seg, room_masks) for seg in resolved]
+
+
+def _center_exterior_segment(seg: WallSegment, room_masks: list[np.ndarray | None]) -> WallSegment:
+    if EXTERIOR not in seg.rooms:
+        return seg
+    room = next((side for side in seg.rooms if isinstance(side, int)), None)
+    mask = room_masks[room] if room is not None else None
+    outward = _room_outward_normal(seg, mask)
+    if outward is None:
+        return seg
+
+    start = np.asarray(seg.start, dtype=np.float64)
+    end = np.asarray(seg.end, dtype=np.float64)
+    along = end - start
+    length = float(np.linalg.norm(along))
+    if length == 0:
+        return seg
+    along /= length
+    half = seg.thickness_px / 2
+    start = start + outward * half - along * half
+    end = end + outward * half + along * half
+    return replace(
+        seg,
+        start=(float(start[0]), float(start[1])),
+        end=(float(end[0]), float(end[1])),
+    )
+
+
+def measure_bay_protrusion(
+    seg: WallSegment,
+    bbox: tuple[float, float, float, float],
+    walls: WallExtraction,
+    rooms: list[RoomDraft],
+    bgr: np.ndarray,
+) -> list[tuple[float, float]] | None:
+    """Measure a rectangular/trapezoidal bay outline from its facade strokes.
+
+    The host opening supplies the base. The farthest parallel structural run
+    with two connecting side strokes supplies the outer edge; unrelated
+    dimension lines therefore do not become bay windows.
+    """
+    if EXTERIOR not in seg.rooms:
+        return None
+    room = next((side for side in seg.rooms if isinstance(side, int)), None)
+    masks = _room_masks(rooms, walls.union.shape)
+    mask = masks[room] if room is not None else None
+    outward = _room_outward_normal(seg, mask)
+    if outward is None:
+        return None
+
+    (sx0, sy0), (sx1, sy1) = seg.start, seg.end
+    horizontal = abs(sx1 - sx0) >= abs(sy1 - sy0)
+    if horizontal and abs(outward[1]) < 0.9:
+        return None
+    if not horizontal and abs(outward[0]) < 0.9:
+        return None
+
+    x0, y0, x1, y1 = bbox
+    base_lo, base_hi = (x0, x1) if horizontal else (y0, y1)
+    base_coord = (sy0 + sy1) / 2 if horizontal else (sx0 + sx1) / 2
+    width = base_hi - base_lo
+    if width <= 0:
+        return None
+
+    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+    raw_strokes = cv2.adaptiveThreshold(
+        gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 51, 10
+    )
+    structural = (walls.union > 0) | (raw_strokes > 0)
+    h, w = structural.shape
+    min_depth = max(4, int(round(1.25 * seg.thickness_px)))
+    max_depth = int(round(min(max(6 * seg.thickness_px, 0.75 * width), 0.25 * max(h, w))))
+    pad = int(round(seg.thickness_px))
+    along_lo = max(0, int(round(base_lo)) - pad)
+    along_hi = min((w if horizontal else h) - 1, int(round(base_hi)) + pad)
+    min_run = max(6, int(round(0.35 * width)))
+    close_width = max(3, int(round(seg.thickness_px / 2)))
+    candidates: list[tuple[int, int, int]] = []
+
+    for depth in range(min_depth, max_depth + 1):
+        coord = int(round(base_coord + depth * (outward[1] if horizontal else outward[0])))
+        if horizontal:
+            if not 0 <= coord < h:
+                break
+            values = structural[coord, along_lo : along_hi + 1]
+        else:
+            if not 0 <= coord < w:
+                break
+            values = structural[along_lo : along_hi + 1, coord]
+        closed = cv2.morphologyEx(
+            values.astype(np.uint8)[None, :],
+            cv2.MORPH_CLOSE,
+            np.ones((1, close_width), np.uint8),
+        ).ravel()
+        for run_lo, run_hi, value in _runs(closed):
+            if value and run_hi - run_lo + 1 >= min_run:
+                candidates.append((depth, along_lo + run_lo, along_lo + run_hi))
+
+    if not candidates:
+        return None
+
+    # One physical outer stroke occupies several adjacent raster rows. Use
+    # its middle rather than its far edge to avoid another half-stroke bias.
+    groups: list[list[tuple[int, int, int]]] = []
+    for candidate in candidates:
+        if groups and candidate[0] <= groups[-1][-1][0] + 1:
+            groups[-1].append(candidate)
+        else:
+            groups.append([candidate])
+    for group in reversed(groups):
+        median_depth = float(np.median([item[0] for item in group]))
+        outer_lo = float(np.median([item[1] for item in group]))
+        outer_hi = float(np.median([item[2] for item in group]))
+        outer_coord = base_coord + median_depth * (outward[1] if horizontal else outward[0])
+        if horizontal:
+            base_a, base_b = (base_lo, base_coord), (base_hi, base_coord)
+            outer_a, outer_b = (outer_lo, outer_coord), (outer_hi, outer_coord)
+        else:
+            base_a, base_b = (base_coord, base_lo), (base_coord, base_hi)
+            outer_a, outer_b = (outer_coord, outer_lo), (outer_coord, outer_hi)
+        side_coverage = min(
+            _stroke_coverage(structural, base_a, outer_a),
+            _stroke_coverage(structural, base_b, outer_b),
+        )
+        if side_coverage >= 0.35:
+            return [base_a, base_b, outer_b, outer_a]
+    return None
+
+
+def _stroke_coverage(
+    mask: np.ndarray, start: tuple[float, float], end: tuple[float, float]
+) -> float:
+    length = max(2, int(round(np.hypot(end[0] - start[0], end[1] - start[1]))))
+    xs = np.linspace(start[0], end[0], length + 1)
+    ys = np.linspace(start[1], end[1], length + 1)
+    h, w = mask.shape
+    hits = 0
+    for x, y in zip(xs, ys, strict=True):
+        xi, yi = int(round(x)), int(round(y))
+        if mask[max(0, yi - 2) : min(h, yi + 3), max(0, xi - 2) : min(w, xi + 3)].any():
+            hits += 1
+    return hits / len(xs)
 
 
 def _segment(

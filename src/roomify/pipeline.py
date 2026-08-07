@@ -28,9 +28,13 @@ from roomify.merge import (
     merge_openings,
     merge_rooms,
 )
-from roomify.openings import WallSegment, find_openings
+from roomify.openings import WallSegment, find_openings, measure_bay_protrusion
 from roomify.rooms import detect_rooms
 from roomify.schema import (
+    DEFAULT_DOOR_HEIGHT_MM,
+    DEFAULT_LEVEL_HEIGHT_MM,
+    DEFAULT_WINDOW_HEIGHT_MM,
+    DEFAULT_WINDOW_SILL_HEIGHT_MM,
     BBox,
     Element,
     FloorPlan,
@@ -55,6 +59,10 @@ def parse(
     use_vlm: bool = True,
     debug_dir: str | Path | None = None,
     max_dim: int = 2000,
+    level_height_mm: float = DEFAULT_LEVEL_HEIGHT_MM,
+    door_height_mm: float = DEFAULT_DOOR_HEIGHT_MM,
+    window_sill_height_mm: float = DEFAULT_WINDOW_SILL_HEIGHT_MM,
+    window_height_mm: float = DEFAULT_WINDOW_HEIGHT_MM,
 ) -> FloorPlan:
     """Parse a floor-plan image or PDF into a structured FloorPlan.
 
@@ -62,6 +70,19 @@ def parse(
     alone. debug_dir writes per-stage overlay PNGs — with this many tuned
     thresholds they are part of the algorithm, not a nicety.
     """
+    vertical = (level_height_mm, door_height_mm, window_sill_height_mm, window_height_mm)
+    if not all(math.isfinite(value) for value in vertical):
+        raise ValueError("vertical dimensions must be finite")
+    if min(level_height_mm, door_height_mm, window_height_mm) <= 0:
+        raise ValueError("level, door, and window heights must be positive")
+    if window_sill_height_mm < 0:
+        raise ValueError("window sill height must be non-negative")
+    if (
+        door_height_mm > level_height_mm
+        or window_sill_height_mm + window_height_mm > level_height_mm
+    ):
+        raise ValueError("door and window extents must fit within the level height")
+
     src = load(path, page=page, max_dim=max_dim)
     warnings: list[ParseWarning] = []
     unresolved: list[Unresolved] = []
@@ -248,6 +269,16 @@ def parse(
     )
     warnings += op_warnings
     unresolved += op_unresolved
+    warnings.append(
+        ParseWarning(
+            code="vertical_defaults_assumed",
+            message=(
+                "2D plans contain no vertical dimensions; configured defaults used "
+                f"(level {level_height_mm:g}mm, doors {door_height_mm:g}mm, "
+                f"window sill/height {window_sill_height_mm:g}/{window_height_mm:g}mm)"
+            ),
+        )
+    )
 
     if debug_dir:
         debug_mod.save(debug_dir, "01_walls.png", debug_mod.walls_overlay(src.bgr, walls))
@@ -275,7 +306,15 @@ def parse(
         plan_read,
         warnings,
         unresolved,
+        level_height_mm,
+        door_height_mm,
+        window_sill_height_mm,
+        window_height_mm,
     )
+    if plan.scale is not None:
+        from roomify.node_graph import embed_node_graph
+
+        plan = embed_node_graph(plan)
     return plan
 
 
@@ -293,6 +332,10 @@ def _assemble(
     plan_read: object | None,
     warnings: list[ParseWarning],
     unresolved: list[Unresolved],
+    level_height_mm: float,
+    door_height_mm: float,
+    window_sill_height_mm: float,
+    window_height_mm: float,
 ) -> FloorPlan:
     f = src.scale_to_original  # working px -> original px
     scale = scale_draft.to_schema(f) if scale_draft else None
@@ -421,6 +464,40 @@ def _assemble(
             width_mm = op.width_px * f / (
                 scale.px_per_mm_x if op.axis == "h" else scale.px_per_mm_y
             )
+        is_door = op.element_type == "passage" or op.element_type.endswith("_door")
+        is_window = op.element_type == "window" or op.element_type.endswith("_window")
+        sill_height_mm = height_mm = None
+        if is_door:
+            sill_height_mm, height_mm = 0.0, door_height_mm
+        elif is_window:
+            if op.element_type == "floor_to_ceiling_window":
+                sill_height_mm, height_mm = 0.0, level_height_mm
+            else:
+                sill_height_mm, height_mm = window_sill_height_mm, window_height_mm
+
+        protrusion = None
+        if op.element_type == "bay_window" and 0 <= op.wall_index < len(segments):
+            protrusion = measure_bay_protrusion(
+                segments[op.wall_index], op.bbox, walls, rooms, src.bgr
+            )
+        protrusion_px = [pt(x, y) for x, y in protrusion] if protrusion else None
+        protrusion_mm = (
+            [pt_mm(x, y) for x, y in protrusion] if protrusion and scale is not None else None
+        )
+        if op.element_type == "bay_window" and protrusion is None:
+            warnings.append(
+                ParseWarning(
+                    code="bay_window_geometry_unresolved",
+                    message="bay-window facade strokes did not form a measurable protrusion",
+                    ref=opening_ids[i],
+                )
+            )
+            unresolved.append(
+                Unresolved(
+                    path=f"openings/{opening_ids[i]}/protrusion_polygon_px",
+                    reason="no closed bay-window facade stroke evidence in the image",
+                )
+            )
         schema_openings.append(
             Opening(
                 id=opening_ids[i],
@@ -430,11 +507,14 @@ def _assemble(
                 center_px=pt(*op.center),
                 width_px=op.width_px * f,
                 width_mm=width_mm,
+                sill_height_mm=sill_height_mm,
+                height_mm=height_mm,
                 wall_id=wall_id_of_segment.get(op.wall_index),
                 connects=(side_name(op.connects[0]), side_name(op.connects[1])),
                 swing=op.swing,  # type: ignore[arg-type]
                 hinge_px=pt(*op.hinge) if op.hinge else None,
-                protrusion_polygon_px=None,
+                protrusion_polygon_px=protrusion_px,
+                protrusion_polygon_mm=protrusion_mm,
                 source=op.source,  # type: ignore[arg-type]
                 confidence=op.confidence,
             )
@@ -471,6 +551,7 @@ def _assemble(
         image_width_px=src.original_width,
         image_height_px=src.original_height,
         north_angle_deg=north,
+        level_height_mm=level_height_mm,
         scale=scale,
         rooms=schema_rooms,
         walls=schema_walls,

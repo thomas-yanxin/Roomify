@@ -44,7 +44,7 @@ roomify floorplan.png -o floorplan.json
 
 ```json
 {
-  "schema_version": "1.0",
+  "schema_version": "1.2",
   "scale": {
     "px_per_mm_x": 0.0431736218444101,
     "px_per_mm_y": 0.048002053563788824,
@@ -115,8 +115,9 @@ uv run roomify examples/floorplan-1.png -o plan.json
 ```
 
 支持常见图片格式和 PDF。`--page N` 用于选择 PDF 页，`--no-vlm` 只运行
-计算机视觉部分，`--debug DIR` 保存各阶段的掩码与标记图。若使用 pip 备用流程
-并已激活 `.venv`，请省略 `uv run`。
+计算机视觉部分，`--debug DIR` 保存各阶段的掩码与标记图。成功标定比例尺后会填充
+米制 `nodes` 和 `rootNodeIds`。若使用 pip 备用流程并已激活 `.venv`，请省略
+`uv run`。
 
 ### Python
 
@@ -129,7 +130,7 @@ print(plan.rooms[0].name)       # 客厅
 print(plan.rooms[0].area_sqm)   # 37.33987625081361
 print(plan.scale.confidence)    # high
 
-plan.model_dump_json(indent=2)
+plan.model_dump_json(indent=2)  # 完整 Roomify JSON，包含 nodes/rootNodeIds
 ```
 
 如果只需要像素几何，不调用 VLM：
@@ -157,7 +158,7 @@ Roomify 不会自行加载 `.env` 文件。`.env.example` 列出了全部环境�
 ```text
 FloorPlan
 ├── source_file, source_sha256, page
-├── image_width_px, image_height_px, north_angle_deg
+├── image_width_px, image_height_px, north_angle_deg, level_height_mm
 ├── scale
 │   ├── px_per_mm_x, px_per_mm_y, anisotropy
 │   └── method, confidence, 证据数量
@@ -172,18 +173,23 @@ FloorPlan
 │   └── rooms
 ├── openings[]
 │   ├── element_type, bbox_px, center_px, width_px, width_mm
-│   ├── wall_id, connects, swing, hinge_px
+│   ├── sill_height_mm, height_mm, wall_id, connects, swing, hinge_px
+│   ├── protrusion_polygon_px, protrusion_polygon_mm
 │   └── source, confidence
 ├── elements[]
 ├── warnings[]
-└── unresolved[]
+├── unresolved[]
+├── nodes{}（米制节点图；无比例尺时为空）
+└── rootNodeIds[]（节点图根节点；无比例尺时为空）
 ```
 
 主要约定：
 
 - 像素坐标使用原始输入图片。原点在左上角，x 向右，y 向下。
 - 多边形使用开放环，末尾不会重复第一个点。
-- `scale` 为 `null` 时，所有毫米和平方米字段也为 `null`。
+- `scale` 为 `null` 时，图像推导的平面毫米和平方米字段也为 `null`；垂直默认值仍保留。
+- 2D 图没有立面尺寸时，默认层高 2800mm、门高 2100mm、窗台/窗高
+  900/1500mm；可用对应 CLI 参数或 `parse()` 关键字覆盖。
 - `warnings` 记录降级和证据冲突。
 - `unresolved` 列出无法从图纸中确定的字段。
 
@@ -214,8 +220,7 @@ Roomify 最多同时发起两路 VLM 请求。端点不支持 `json_schema` 或
 - 实心填充墙体的住宅户型图效果最好。
 - 纯线框 CAD 图会走较简单的回退路径。
 - 两个空间之间完全没有分隔线时，会被识别为一个房间。
-- 暂不测量飘窗向外凸出的多边形。
-- 当前版本用房间内侧边界近似外墙中心线。
+- 飘窗需要外沿和两条侧边在图中可见；证据不完整时保留为未解析，不猜深度。
 
 ## 开发
 

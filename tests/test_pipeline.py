@@ -1,7 +1,14 @@
 import cv2
+import pytest
 
 from conftest import WALL_GREY, blank, draw_gap, draw_sill, draw_wall_rect
 from roomify import parse
+from roomify.merge import ScaleDraft
+
+
+def test_vertical_defaults_must_fit_level():
+    with pytest.raises(ValueError, match="fit within"):
+        parse("unused.png", use_vlm=False, level_height_mm=2000)
 
 
 def test_parse_thin_line_plan(tmp_path):
@@ -15,6 +22,29 @@ def test_parse_thin_line_plan(tmp_path):
     assert plan.rooms
     assert plan.walls
     assert all(wall.thickness_px > 0 for wall in plan.walls)
+
+
+def test_parse_embeds_node_graph_when_scale_is_available(
+    tmp_path, simple_plan, monkeypatch
+):
+    path = tmp_path / "calibrated.png"
+    assert cv2.imwrite(str(path), simple_plan)
+    scale = ScaleDraft(
+        px_per_mm_x=0.1,
+        px_per_mm_y=0.1,
+        method="dimension_chains",
+        confidence="medium",
+        px_per_mm_from_areas=None,
+        n_rooms_used=0,
+        n_chain_values_used=2,
+    )
+    monkeypatch.setattr("roomify.pipeline.estimate_scale", lambda *_args: (scale, []))
+
+    plan = parse(path, use_vlm=False)
+
+    assert plan.rootNodeIds == ["site_roomify"]
+    assert plan.nodes["site_roomify"]["type"] == "site"
+    assert any(node["type"] == "wall" for node in plan.nodes.values())
 
 
 def test_unresolved_paths_use_final_object_ids(tmp_path):
