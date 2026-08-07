@@ -9,8 +9,11 @@ Roomify 读取住宅户型图或 PDF，输出房间、墙体、门窗和毫米�
 [English](README.md) · [简体中文](README_ZH.md)
 
 ![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)
+[![CI](https://github.com/thomas-yanxin/Roomify/actions/workflows/python-package.yml/badge.svg)](https://github.com/thomas-yanxin/Roomify/actions/workflows/python-package.yml)
 ![状态：Beta](https://img.shields.io/badge/status-beta-6f42c1)
 ![许可证：Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-2ea44f)
+
+[示例](#示例) · [安装](#安装) · [JSON 结构](#json-结构) · [开发](#开发)
 
 </div>
 
@@ -33,13 +36,9 @@ roomify floorplan.png -o floorplan.json
 [`floorplan-1.png`](examples/floorplan-1.png) →
 [`floorplan-1.json`](examples/floorplan-1.json)
 
-Roomify 从图中得到：
-
-- 9 个房间
-- 55 段墙体
-- 18 个墙体开口
-- 分别计算横向与纵向比例尺，置信度为 `high`
-- 客厅计算面积为 37.34 m²，图纸标注为 37.52 m²
+| 房间 | 墙段 | 开口 | 比例尺置信度 | 客厅面积 |
+|---:|---:|---:|:---:|:---|
+| 9 | 55 | 18 | `high` | 计算 37.34 m² / 标注 37.52 m² |
 
 完整结果中的部分字段如下：
 
@@ -199,6 +198,16 @@ FloorPlan
 
 几何计算不依赖 VLM 成功返回。调用失败时，Roomify 会保留几何结果，写入警告，
 并把相关字段标为未解析。
+
+### VLM 请求
+
+正常读图使用 [结构化输出](https://developers.openai.com/api/docs/guides/structured-outputs)：
+启用 strict `json_schema`，关闭模型思考。仓库示例端到端约 25–40 秒；自由推理
+实测慢 6–30 倍。
+
+Roomify 最多同时发起两路 VLM 请求。端点不支持 `json_schema` 或
+`enable_thinking` 时，会在本次会话中停用对应功能。响应未通过 schema 校验时，
+会开启思考并按 schema 重试一次。
 
 ## 当前范围
 

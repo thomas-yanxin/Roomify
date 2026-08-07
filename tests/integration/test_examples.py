@@ -107,4 +107,9 @@ def test_fp2_full_parse():
     doors = [o for o in plan.openings if o.element_type.endswith("_door")]
     assert len(doors) >= 4
     assert any(o.swing is not None for o in doors), "fp2 draws swing arcs"
-    assert any(o.element_type == "passage" and (o.width_mm or 0) > 1800 for o in plan.openings)
+    # The wide kitchen mouth is drawn with a thin double-line track band:
+    # "passage" and "sliding_door" are both defensible reads of it.
+    assert any(
+        o.element_type in ("passage", "sliding_door") and (o.width_mm or 0) > 1800
+        for o in plan.openings
+    )

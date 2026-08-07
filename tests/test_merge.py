@@ -217,3 +217,45 @@ def test_no_scale_keeps_everything():
     tiny = _draft(100.0, printed=None, name=None)
     outcome = apply_area_checks([tiny], None)
     assert len(outcome.rooms) == 1
+
+
+# ------------------------------------------------------------ merge_openings
+
+
+def test_extra_elements_deduped_against_marked_openings():
+    from dataclasses import dataclass
+
+    from roomify.merge import merge_openings
+    from roomify.vlm import OpeningsRead
+
+    @dataclass
+    class _Cand:  # minimal OpeningCandidate stand-in
+        marker: str = "A"
+        bbox: tuple = (100.0, 200.0, 160.0, 210.0)
+        center: tuple = (130.0, 205.0)
+        axis: str = "h"
+        width_px: float = 60.0
+        kind_hint: str = "window"
+        connects: tuple = (0, "exterior")
+        wall_index: int = 0
+        arc: object = None
+
+    read = OpeningsRead.model_validate(
+        {
+            "candidates": [
+                {"marker": "A", "element_type": "window", "raw_text": None,
+                 "confidence": 0.9, "is_real": True}
+            ],
+            "extra_elements": [
+                # duplicate of A, a few px off -> dropped
+                {"box_2d": [195, 98, 215, 158], "element_type": "window",
+                 "raw_text": None, "confidence": 0.8, "is_real": True},
+                # genuinely elsewhere -> kept
+                {"box_2d": [700, 700, 800, 800], "element_type": "stair",
+                 "raw_text": None, "confidence": 0.8, "is_real": True},
+            ],
+        }
+    )
+    drafts, elements, warnings, unresolved = merge_openings([_Cand()], read, (1000, 1000))
+    assert len(drafts) == 1
+    assert [e.element_type for e in elements] == ["stair"]

@@ -83,12 +83,14 @@ def parse(
     if client is not None:
         from concurrent.futures import ThreadPoolExecutor
 
-        from roomify.vlm import PlanRead, plan_read_prompt
+        from roomify.vlm import PLAN_WIRE, PlanRead, plan_read_prompt
 
         # 2 workers, measured: this endpoint's multi-image requests start
         # timing out under 3-way concurrency.
         executor = ThreadPoolExecutor(max_workers=2)
-        plan_future = executor.submit(client.call, plan_read_prompt(), [src.bgr], PlanRead)
+        plan_future = executor.submit(
+            client.call, plan_read_prompt(), [src.bgr], PlanRead, wire_schema=PLAN_WIRE
+        )
 
     walls = extract_walls(src.bgr)
     if walls.band_fallback:
@@ -110,13 +112,27 @@ def parse(
 
     room_read = None
     if client is not None:
-        from roomify.vlm import RoomRead, render_room_overlay, room_semantics_prompt
+        from roomify.vlm import (
+            ROOMS_WIRE,
+            RoomRead,
+            render_room_overlay,
+            room_semantics_prompt,
+        )
 
         overlay = render_room_overlay(src.bgr, detection.rooms)
         if debug_dir:
             debug_mod.save(debug_dir, "vlm_room_overlay.png", overlay)
+        # 1.5× upscale: printed ㎡ labels sit at the OCR limit on ~700px
+        # listing exports; measured to fix small-text misreads at no latency
+        # cost (the extra image tokens don't move this model's runtime).
+        import cv2
+
+        upscaled = cv2.resize(overlay, None, fx=1.5, fy=1.5, interpolation=cv2.INTER_CUBIC)
         room_read = client.call(
-            room_semantics_prompt(len(detection.rooms)), [overlay], RoomRead
+            room_semantics_prompt(len(detection.rooms)),
+            [upscaled],
+            RoomRead,
+            wire_schema=ROOMS_WIRE,
         )
         if room_read is None:
             warnings.append(
@@ -149,6 +165,7 @@ def parse(
     openings_read = None
     if client is not None and candidates:
         from roomify.vlm import (
+            OPENINGS_WIRE,
             OpeningsRead,
             openings_prompt,
             render_candidate_crop,
@@ -172,6 +189,7 @@ def parse(
                     openings_prompt([c.marker for c in chunk], include_extras=idx == 0),
                     [overlay, *crops],
                     OpeningsRead,
+                    wire_schema=OPENINGS_WIRE,
                 )
             )
         merged = OpeningsRead()
@@ -197,6 +215,7 @@ def parse(
                 openings_prompt([cand.marker], include_extras=False),
                 [overlay, render_candidate_crop(src.bgr, cand)],
                 OpeningsRead,
+                wire_schema=OPENINGS_WIRE,
             )
             if part is None:
                 warnings.append(

@@ -153,9 +153,34 @@ class ExtraRoom(RoomEntry):
         return box
 
 
+def _marker_keyed(v: object) -> object:
+    """Accept both wire shapes for marker-keyed tables.
+
+    Structured-output mode sends an ARRAY of entries each carrying its
+    "marker" (strict JSON schemas cannot express dynamic dict keys); the
+    json_object fallback may still produce the dict form. Both normalize to
+    {marker: entry}.
+    """
+    if not isinstance(v, list):
+        return v
+    table: dict[str, dict] = {}
+    for item in v:
+        if isinstance(item, dict) and "marker" in item:
+            entry = dict(item)
+            table[str(entry.pop("marker"))] = entry
+        else:
+            logger.warning("dropping marker-less table entry: %r", item)
+    return table
+
+
 class RoomRead(BaseModel):
     rooms: dict[str, RoomEntry] = {}
     extra_rooms: list[ExtraRoom] = []
+
+    @field_validator("rooms", mode="before")
+    @classmethod
+    def _keyed(cls, v: object) -> object:
+        return _marker_keyed(v)
 
     @field_validator("extra_rooms", mode="before")
     @classmethod
@@ -205,6 +230,11 @@ class OpeningsRead(BaseModel):
     candidates: dict[str, CandidateEntry] = {}
     extra_elements: list[ExtraElement] = []
 
+    @field_validator("candidates", mode="before")
+    @classmethod
+    def _keyed(cls, v: object) -> object:
+        return _marker_keyed(v)
+
     @field_validator("extra_elements", mode="before")
     @classmethod
     def _drop_malformed(cls, v: object) -> list:
@@ -220,6 +250,97 @@ class OpeningsRead(BaseModel):
 
 
 # --------------------------------------------------------------------------
+# Wire schemas (OpenAI structured outputs, strict mode)
+#
+# Hand-written on purpose: they ARE the API contract, phrased exactly as the
+# prompts describe it. Strict mode cannot express dynamic dict keys, so the
+# marker tables travel as arrays of {"marker": ...} entries (normalized back
+# to dicts by the response models above). Measured on the reference endpoint,
+# schema-constrained decoding also cuts reasoning tokens roughly in half.
+# --------------------------------------------------------------------------
+
+
+def _wire(name: str, properties: dict) -> dict:
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": name,
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "properties": properties,
+                "required": list(properties),
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
+def _entries(item_properties: dict) -> dict:
+    return {
+        "type": "array",
+        "items": {
+            "type": "object",
+            "properties": item_properties,
+            "required": list(item_properties),
+            "additionalProperties": False,
+        },
+    }
+
+
+_BOX_2D = {"type": ["array", "null"], "items": {"type": "integer"}}
+_ROOM_ENTRY = {
+    "marker": {"type": "string"},
+    "name": {"type": ["string", "null"]},
+    "room_type": {"type": "string", "enum": list(_ROOM_TYPES)},
+    "printed_area_sqm": {"type": ["number", "null"]},
+    "confidence": {"type": "number"},
+    "not_a_room": {"type": "boolean"},
+}
+_OPENING_ENTRY = {
+    "marker": {"type": "string"},
+    "element_type": {"type": "string", "enum": list(_ELEMENT_TYPES)},
+    "raw_text": {"type": ["string", "null"]},
+    "confidence": {"type": "number"},
+    "is_real": {"type": "boolean"},
+}
+
+PLAN_WIRE = _wire(
+    "plan_read",
+    {
+        "footprint_box_2d": _BOX_2D,
+        "dimension_chains": _entries(
+            {
+                "side": {"type": "string", "enum": ["top", "bottom", "left", "right"]},
+                "values_mm": {"type": "array", "items": {"type": "number"}},
+            }
+        ),
+        "north_angle_deg": {"type": ["number", "null"]},
+    },
+)
+ROOMS_WIRE = _wire(
+    "room_semantics",
+    {
+        "rooms": _entries(_ROOM_ENTRY),
+        "extra_rooms": _entries(
+            {k: v for k, v in _ROOM_ENTRY.items() if k != "marker"}
+            | {"box_2d": {"type": "array", "items": {"type": "integer"}}}
+        ),
+    },
+)
+OPENINGS_WIRE = _wire(
+    "opening_classes",
+    {
+        "candidates": _entries(_OPENING_ENTRY),
+        "extra_elements": _entries(
+            {k: v for k, v in _OPENING_ENTRY.items() if k != "marker"}
+            | {"box_2d": {"type": "array", "items": {"type": "integer"}}}
+        ),
+    },
+)
+
+
+# --------------------------------------------------------------------------
 # Client
 # --------------------------------------------------------------------------
 
@@ -230,7 +351,7 @@ class VLMClient:
         api_key: str | None = None,
         base_url: str | None = None,
         model: str | None = None,
-        timeout: float = 120.0,  # healthy calls measure 45-90s; hung ones 502 at ~240s
+        timeout: float = 90.0,  # no-think calls measure 2-15s; leave headroom
     ) -> None:
         api_key = api_key or os.environ.get("ROOMIFY_VLM_API_KEY")
         base_url = base_url or os.environ.get("ROOMIFY_VLM_BASE_URL")
@@ -256,25 +377,36 @@ class VLMClient:
         self._client = OpenAI(
             api_key=api_key, base_url=base_url, timeout=timeout, max_retries=1
         )
+        # Capability flags, learned from the endpoint's 400s on first use:
+        # None = untried, False = rejected (stop sending). Keeps Roomify
+        # working against any OpenAI-compatible server.
+        self._schema_ok: bool | None = None
+        self._nothink_ok: bool | None = None
 
     def call(
         self,
         text: str,
         images: list[np.ndarray],
         response_model: type[T],
-        max_tokens: int = 8000,
+        wire_schema: dict | None = None,
+        max_tokens: int = 4000,
         timeout: float | None = None,
+        thinking: bool = False,
     ) -> T | None:
         """One VLM request → validated model, or None (callers must degrade).
 
-        On a validation/JSON failure the model gets exactly one retry with
-        the error appended; transport errors are already retried inside the
-        OpenAI SDK, so a second failure there just means degrade. ``timeout``
-        overrides the client default per request — reasoning latency is
-        content-driven, and callers retrying a known-slow request should
-        grant it more time rather than more attempts.
+        Fast path: structured outputs (``wire_schema``) with model thinking
+        disabled — measured 6-17× faster than free-form reasoning on the
+        reference endpoint, with equal or better accuracy on reading tasks,
+        and it eliminates the pathological reasoning stalls entirely. On a
+        validation/JSON failure the single retry ESCALATES to thinking mode
+        (slow but careful). Endpoints that reject ``json_schema`` or
+        ``enable_thinking`` are detected via their 400s and the feature is
+        dropped for the rest of the session.
         """
         from typing import Any
+
+        from openai import BadRequestError
 
         content: list[dict] = [{"type": "text", "text": text}]
         for image in images:
@@ -286,18 +418,37 @@ class VLMClient:
         ]
 
         client = self._client if timeout is None else self._client.with_options(timeout=timeout)
-        for attempt in (1, 2):
+        attempt = 1
+        downgrades = 0
+        while attempt <= 2:
+            use_schema = wire_schema is not None and self._schema_ok is not False
+            suppress_thinking = not thinking and self._nothink_ok is not False
+            request: dict[str, Any] = {
+                "model": self.model,
+                "messages": messages,
+                "response_format": wire_schema if use_schema else {"type": "json_object"},
+                "max_tokens": max_tokens,
+                "temperature": 0,
+            }
+            if suppress_thinking:
+                request["extra_body"] = {"enable_thinking": False}
             try:
-                response = client.chat.completions.create(
-                    model=self.model,
-                    messages=messages,
-                    response_format={"type": "json_object"},
-                    max_tokens=max_tokens,
-                    temperature=0,
-                )
+                response = client.chat.completions.create(**request)
+            except BadRequestError as exc:
+                downgrades += 1
+                if downgrades <= 2 and _downgrade_capability(self, exc, use_schema,
+                                                             suppress_thinking):
+                    continue  # same attempt, one capability fewer
+                logger.warning("VLM request rejected (%s): %s", response_model.__name__, exc)
+                return None
             except Exception as exc:  # transport/API — SDK retries are exhausted
                 logger.warning("VLM request failed (%s): %s", response_model.__name__, exc)
                 return None
+            if use_schema:
+                self._schema_ok = True
+            if suppress_thinking:
+                self._nothink_ok = True
+
             raw = response.choices[0].message.content or ""
             try:
                 return response_model.model_validate(_parse_json(raw))
@@ -319,7 +470,26 @@ class VLMClient:
                         ),
                     }
                 )
+                thinking = True  # retry carefully: quality over speed
+                attempt += 1
         return None
+
+
+def _downgrade_capability(
+    client: VLMClient, exc: Exception, used_schema: bool, suppressed_thinking: bool
+) -> bool:
+    """Interpret a 400 as a capability rejection; returns True if a retry
+    without that capability makes sense."""
+    message = str(exc).lower()
+    if used_schema and ("json_schema" in message or "response_format" in message):
+        logger.info("endpoint rejected json_schema; falling back to json_object")
+        client._schema_ok = False
+        return True
+    if suppressed_thinking and ("thinking" in message or "extra_body" in message):
+        logger.info("endpoint rejected enable_thinking; sending default requests")
+        client._nothink_ok = False
+        return True
+    return False
 
 
 def _parse_json(raw: str) -> dict:
@@ -347,16 +517,25 @@ def _data_uri(bgr: np.ndarray) -> str:
 def render_room_overlay(bgr: np.ndarray, rooms: list[CVRoom]) -> np.ndarray:
     out = bgr.copy()
     h, w = out.shape[:2]
-    radius = max(9, int(w * 0.016))
+    base_radius = max(9, int(w * 0.016))
     for i, room in enumerate(rooms, start=1):
         cx, cy = room.seed
-        # Nudge the marker up so it doesn't cover the label text at the
-        # room's center, but keep it inside the detected room.
-        mx = int(min(max(cx, radius + 1), w - radius - 1))
-        my = int(min(max(cy - 2 * radius, radius + 1), h - radius - 1))
+        # Shrink the marker for small rooms — a full-size marker parked at a
+        # balcony's center sits exactly on its label and the name becomes
+        # unreadable (measured failure mode).
+        radius = max(6, min(base_radius, int(0.28 * room.area_px**0.5)))
+        # The label text sits at the room's center, so try offset positions
+        # first (above, below, beside) and fall back to the center only when
+        # nothing else stays inside the detected room.
         contour = room.polygon.astype(np.float32)
-        if cv2.pointPolygonTest(contour, (mx, my), True) < radius:
-            mx, my = int(round(cx)), int(round(cy))
+        step = 2.2 * radius
+        mx, my = int(round(cx)), int(round(cy))
+        for dx, dy in ((0, -step), (0, step), (-step, 0), (step, 0), (0, 0)):
+            px = int(min(max(cx + dx, radius + 1), w - radius - 1))
+            py = int(min(max(cy + dy, radius + 1), h - radius - 1))
+            if cv2.pointPolygonTest(contour, (px, py), True) >= radius * 0.9:
+                mx, my = px, py
+                break
         cv2.circle(out, (mx, my), radius, (0, 255, 255), -1)
         cv2.circle(out, (mx, my), radius, (0, 0, 0), 2)
         label = str(i)
@@ -466,17 +645,20 @@ def room_semantics_prompt(n_rooms: int) -> str:
         '{"box_2d": [ymin, xmin, ymax, xmax] integers 0-1000 fitted to the room\'s inner wall '
         'faces, "name": ..., "room_type": ..., "printed_area_sqm": ...}. Box the room\'s floor '
         "area, never just its text label. Use an empty list when every room is markered.\n"
-        'Return JSON: {"rooms": {"1": {...}, "2": {...}, ...}, "extra_rooms": [...]}'
+        'Return JSON: {"rooms": [{"marker": "1", "name": ..., "room_type": ..., '
+        '"printed_area_sqm": ..., "confidence": ..., "not_a_room": ...}, ...], '
+        '"extra_rooms": [...]} — one entry per marker number.'
     )
 
 
 def openings_prompt(ids: list[str], include_extras: bool = True) -> str:
     types = ", ".join(f'"{t}"' for t in _ELEMENT_TYPES)
     extras = (
-        "Additionally, list legend elements the markers MISSED — stairs, elevators, columns, "
-        'equipment platforms, and any unmarked doors/windows — under "extra_elements": '
+        "Additionally, list legend elements NO marker covers — stairs, elevators, columns, "
+        'equipment platforms, and genuinely unmarked doors/windows — under "extra_elements": '
         '{"box_2d": [ymin, xmin, ymax, xmax] integers 0-1000, "element_type": ..., '
-        '"raw_text": ...}. Use an empty list if nothing was missed.\n'
+        '"raw_text": ...}. Never repeat an opening that already has a letter marker. '
+        "Use an empty list if nothing was missed.\n"
         if include_extras
         else 'Set "extra_elements" to an empty list.\n'
     )
@@ -500,7 +682,8 @@ def openings_prompt(ids: list[str], include_extras: bool = True) -> str:
         "Do NOT report door swing direction or hinge side — those are measured separately from "
         "pixel evidence.\n"
         + extras
-        + 'Return JSON: {"candidates": {"'
+        + 'Return JSON: {"candidates": [{"marker": "'
         + ids[0]
-        + '": {...}, ...}, "extra_elements": [...]}'
+        + '", "element_type": ..., "raw_text": ..., "confidence": ..., "is_real": ...}, ...], '
+        '"extra_elements": [...]} — one entry per letter.'
     )

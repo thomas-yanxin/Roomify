@@ -69,12 +69,14 @@ def test_chain_read_rejects_unknown_side():
 
 class _FakeCompletions:
     def __init__(self, replies):
-        self.replies = list(replies)
+        self.replies = list(replies)  # str reply, or an Exception to raise
         self.requests = []
 
     def create(self, **kwargs):
         self.requests.append(kwargs)
         content = self.replies.pop(0)
+        if isinstance(content, Exception):
+            raise content
         message = SimpleNamespace(content=content)
         return SimpleNamespace(choices=[SimpleNamespace(message=message)])
 
@@ -108,6 +110,80 @@ def test_call_accepts_fenced_json(monkeypatch):
     good = '```json\n{"rooms": {}, "extra_rooms": []}\n```'
     client, _ = _client_with(monkeypatch, [good])
     assert client.call("p", [np.zeros((4, 4, 3), np.uint8)], RoomRead) is not None
+
+
+def _bad_request(message):
+    import httpx
+    from openai import BadRequestError
+
+    response = httpx.Response(
+        400, request=httpx.Request("POST", "http://localhost:1/v1/chat/completions")
+    )
+    return BadRequestError(message, response=response, body={"message": message})
+
+
+def test_marker_array_contract_normalizes_to_dict():
+    read = RoomRead.model_validate(
+        {
+            "rooms": [
+                {"marker": "2", "name": "客厅", "room_type": "living_room",
+                 "printed_area_sqm": 37.52, "confidence": 0.9, "not_a_room": False},
+                {"marker": "1", "name": "卧室", "room_type": "bedroom",
+                 "printed_area_sqm": 9.65, "confidence": 0.9, "not_a_room": False},
+                {"name": "no marker — dropped"},
+            ],
+            "extra_rooms": [],
+        }
+    )
+    assert set(read.rooms) == {"1", "2"}
+    assert read.rooms["2"].name == "客厅"
+
+
+def test_fast_path_sends_schema_and_disables_thinking(monkeypatch):
+    from roomify.vlm import ROOMS_WIRE
+
+    client, fake = _client_with(monkeypatch, ['{"rooms": [], "extra_rooms": []}'])
+    assert client.call("p", [np.zeros((4, 4, 3), np.uint8)], RoomRead,
+                       wire_schema=ROOMS_WIRE) is not None
+    request = fake.requests[0]
+    assert request["response_format"]["type"] == "json_schema"
+    assert request["extra_body"] == {"enable_thinking": False}
+
+
+def test_schema_rejection_falls_back_to_json_object(monkeypatch):
+    from roomify.vlm import ROOMS_WIRE
+
+    client, fake = _client_with(
+        monkeypatch,
+        [_bad_request("response_format json_schema is not supported"),
+         '{"rooms": {}, "extra_rooms": []}'],
+    )
+    assert client.call("p", [np.zeros((4, 4, 3), np.uint8)], RoomRead,
+                       wire_schema=ROOMS_WIRE) is not None
+    assert fake.requests[0]["response_format"]["type"] == "json_schema"
+    assert fake.requests[1]["response_format"] == {"type": "json_object"}
+    assert client._schema_ok is False  # remembered for the rest of the session
+
+
+def test_thinking_rejection_drops_extra_body(monkeypatch):
+    client, fake = _client_with(
+        monkeypatch,
+        [_bad_request("unknown parameter enable_thinking"),
+         '{"rooms": {}, "extra_rooms": []}'],
+    )
+    assert client.call("p", [np.zeros((4, 4, 3), np.uint8)], RoomRead) is not None
+    assert "extra_body" in fake.requests[0]
+    assert "extra_body" not in fake.requests[1]
+    assert client._nothink_ok is False
+
+
+def test_validation_retry_escalates_to_thinking(monkeypatch):
+    client, fake = _client_with(
+        monkeypatch, ["{not json", '{"rooms": {}, "extra_rooms": []}']
+    )
+    assert client.call("p", [np.zeros((4, 4, 3), np.uint8)], RoomRead) is not None
+    assert "extra_body" in fake.requests[0]  # fast path
+    assert "extra_body" not in fake.requests[1]  # careful retry thinks
 
 
 def test_marker_ids_extend_past_z():

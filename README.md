@@ -10,8 +10,11 @@ openings, and millimetre-scale geometry.
 [English](README.md) · [简体中文](README_ZH.md)
 
 ![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)
+[![CI](https://github.com/thomas-yanxin/Roomify/actions/workflows/python-package.yml/badge.svg)](https://github.com/thomas-yanxin/Roomify/actions/workflows/python-package.yml)
 ![Status: Beta](https://img.shields.io/badge/status-beta-6f42c1)
 ![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-2ea44f)
+
+[Example](#example) · [Install](#install) · [JSON structure](#json-structure) · [Development](#development)
 
 </div>
 
@@ -34,13 +37,9 @@ This plan is included in the repository:
 [`floorplan-1.png`](examples/floorplan-1.png) →
 [`floorplan-1.json`](examples/floorplan-1.json)
 
-Roomify found:
-
-- 9 rooms
-- 55 wall segments
-- 18 wall openings
-- separate horizontal and vertical scales, with `high` confidence
-- a living-room area of 37.34 m²; the drawing prints 37.52 m²
+| Rooms | Wall segments | Openings | Scale confidence | Living-room area |
+|---:|---:|---:|:---:|:---|
+| 9 | 55 | 18 | `high` | 37.34 m² measured / 37.52 m² printed |
 
 Selected fields from the full output:
 
@@ -208,6 +207,18 @@ definitions.
 
 Geometry does not depend on a successful VLM call. Failed calls produce a
 warning and leave the affected fields unresolved.
+
+### VLM requests
+
+Normal reads use [structured outputs](https://developers.openai.com/api/docs/guides/structured-outputs)
+with strict `json_schema` and model thinking disabled. On the bundled example,
+this completes in about 25–40 seconds; free-form reasoning measured 6–30×
+slower.
+
+Roomify runs at most two VLM calls concurrently. If an endpoint rejects
+`json_schema` or `enable_thinking`, that feature is disabled for the session.
+A response that fails schema validation gets one schema-guided retry with
+thinking enabled.
 
 ## Current scope
 

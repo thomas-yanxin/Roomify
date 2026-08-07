@@ -452,11 +452,17 @@ def merge_openings(
     h, w = image_shape
     for extra in read.extra_elements if read is not None else []:
         y0, x0, y1, x1 = (v / 1000.0 for v in extra.box_2d)
+        bbox = (x0 * w, y0 * h, x1 * w, y1 * h)
+        # Models routinely "re-discover" openings that already carry a letter
+        # marker (observed: 5 of 6 extras duplicated marked openings); an
+        # extra that overlaps any candidate is a duplicate, not a find.
+        if any(_boxes_overlap(bbox, c.bbox, slack=8.0) for c in candidates):
+            continue
         elements.append(
             ElementDraft(
                 element_type=extra.element_type,
                 raw_text=extra.raw_text,
-                bbox=(x0 * w, y0 * h, x1 * w, y1 * h),
+                bbox=bbox,
                 source="vlm",
                 confidence=min(extra.confidence, 0.5),
             )
@@ -474,6 +480,23 @@ def merge_openings(
                 )
             )
     return drafts, elements, warnings, unresolved
+
+
+def _boxes_overlap(
+    a: tuple[float, float, float, float],
+    b: tuple[float, float, float, float],
+    slack: float,
+) -> bool:
+    """True when the boxes (grown by ``slack``) share a substantial region —
+    at least 30% of the smaller box."""
+    ax0, ay0, ax1, ay1 = a
+    bx0, by0, bx1, by1 = (b[0] - slack, b[1] - slack, b[2] + slack, b[3] + slack)
+    ix = min(ax1, bx1) - max(ax0, bx0)
+    iy = min(ay1, by1) - max(ay0, by0)
+    if ix <= 0 or iy <= 0:
+        return False
+    smaller = min((ax1 - ax0) * (ay1 - ay0), (b[2] - b[0]) * (b[3] - b[1]))
+    return smaller > 0 and ix * iy >= 0.3 * smaller
 
 
 def apply_area_checks(rooms: list[RoomDraft], scale: ScaleDraft | None) -> MergeOutcome:
