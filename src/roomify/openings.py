@@ -27,6 +27,7 @@ import cv2
 import numpy as np
 
 from roomify.merge import RoomDraft
+from roomify.rooms import building_silhouette
 from roomify.walls import WallExtraction
 
 EXTERIOR = "exterior"
@@ -91,6 +92,7 @@ def find_openings(
 
     segments = derive_wall_segments(rooms, walls)
     room_masks = _room_masks(rooms, walls.solid.shape)
+    silhouette, _ = building_silhouette(walls.union, walls.footprint)
     gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
     binary = cv2.adaptiveThreshold(
         gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 51, 10
@@ -100,7 +102,9 @@ def find_openings(
     max_len = 4.6 * door_px  # wide balcony mouths still count; whole façades don't
     raw: list[OpeningCandidate] = []
     for si, seg in enumerate(segments):
-        raw.extend(_scan_segment(si, seg, walls, room_masks, min_len, max_len))
+        raw.extend(
+            _scan_segment(si, seg, walls, room_masks, silhouette, min_len, max_len)
+        )
 
     raw = _dedupe(raw, walls.thickness_px)
     if len(raw) > MAX_CANDIDATES:
@@ -128,6 +132,7 @@ def _scan_segment(
     seg: WallSegment,
     walls: WallExtraction,
     room_masks: list[np.ndarray | None],
+    silhouette: np.ndarray,
     min_len: float,
     max_len: float,
 ) -> list[OpeningCandidate]:
@@ -159,7 +164,7 @@ def _scan_segment(
     if coverage.size == 0:
         return []
 
-    connects = _resolve_connects(seg, walls, room_masks)
+    connects = _resolve_connects(seg, walls, room_masks, silhouette)
     runs = _absent_runs(coverage, min_len, max_len)
     # Windows do not always interrupt the wall: some plans draw the window
     # box ON a continuous wall run. Multi-stroke intervals in the lines mask
@@ -256,10 +261,19 @@ def _resolve_connects(
     seg: WallSegment,
     walls: WallExtraction,
     room_masks: list[np.ndarray | None],
+    silhouette: np.ndarray,
 ) -> tuple[int | str, int | str]:
     """Room indices pass through; the non-room side of a leftover edge is
-    "exterior" only when it actually leaves the footprint — otherwise it is
-    circulation space no room polygon covered, reported as "unknown"."""
+    "exterior" only when it actually leaves the BUILDING — otherwise it is
+    circulation space no room polygon covered, reported as "unknown".
+
+    Outside-ness is the filled wall silhouette, never its bounding box: an
+    L-shaped, notched or diagonal footprint keeps most of its facade well
+    inside that box, so a box test called the open air behind those walls
+    "unknown" (measured: 33 of fp6's 49 walls, and 94 of 268 opening sides
+    corpus-wide). The mislabel then reaches the classifier prompt as the
+    wrong adjacency prior — the strongest one it has.
+    """
     a, b = seg.rooms
     if isinstance(a, int) and isinstance(b, int):
         return (a, b)
@@ -276,9 +290,10 @@ def _resolve_connects(
             mid[0] + outward[0] * probe_distance,
             mid[1] + outward[1] * probe_distance,
         )
-        x0, y0, x1, y1 = walls.footprint
-        inside_footprint = x0 + 2 <= fx <= x1 - 2 and y0 + 2 <= fy <= y1 - 2
-        far = UNKNOWN if inside_footprint else EXTERIOR
+        xi, yi = int(round(fx)), int(round(fy))
+        h, w = silhouette.shape
+        inside_building = 0 <= yi < h and 0 <= xi < w and silhouette[yi, xi] > 0
+        far = UNKNOWN if inside_building else EXTERIOR
     return (room, far) if isinstance(seg.rooms[0], int) else (far, room)
 
 
@@ -607,7 +622,11 @@ def derive_wall_segments(
         for lo, hi in _subtract_intervals((lo_i, hi_i), shared):
             if hi - lo >= max(6.0, 1.5 * t):
                 segments.append(_segment(axis, coord_i, lo, hi, t, (room_i, EXTERIOR)))
-    resolved = [replace(seg, rooms=_resolve_connects(seg, walls, room_masks)) for seg in segments]
+    silhouette, _ = building_silhouette(walls.union, walls.footprint)
+    resolved = [
+        replace(seg, rooms=_resolve_connects(seg, walls, room_masks, silhouette))
+        for seg in segments
+    ]
     centered = [_center_exterior_segment(seg, room_masks) for seg in resolved]
     return _close_tee_junctions(_fuse_collinear_segments(centered, t), t)
 

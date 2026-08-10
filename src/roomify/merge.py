@@ -98,12 +98,27 @@ class MergeOutcome:
     unresolved: list[Unresolved] = field(default_factory=list)
 
 
+MIN_FREE_FLOOR = 0.30  # of an extra room's box; see merge_rooms
+
+
 def merge_rooms(
-    cv_rooms: list[CVRoom], read: RoomRead | None, image_shape: tuple[int, int]
+    cv_rooms: list[CVRoom],
+    read: RoomRead | None,
+    image_shape: tuple[int, int],
+    free_floor: np.ndarray | None = None,
 ) -> MergeOutcome:
     """CV polygons + VLM semantics table → room drafts.
 
     Marker ids are 1-based strings matching render_room_overlay's numbering.
+
+    ``free_floor`` is the floor inside the building that no CV polygon
+    claims (``rooms.uncovered_floor``). An extra room needs somewhere to
+    exist: the model reports every printed label it sees, so the zones of an
+    open-plan space (走廊/玄关 inside a 客餐厅) come back as "unmarkered
+    rooms" and used to be emitted as boxes lying ON the measured room —
+    double-counting its area and overlapping its polygon. Measured on the
+    corpus, the one genuinely missed room stood on 65% free floor while
+    every redundant box stood on 0-7%.
     """
     out = MergeOutcome(rooms=[])
     entries = read.rooms if read is not None else {}
@@ -166,6 +181,24 @@ def merge_rooms(
         )
         width, height = (x1 - x0) * w, (y1 - y0) * h
         marker = f"vlm_{j + 1}"
+        if free_floor is not None:
+            box = free_floor[
+                max(0, int(y0 * h)) : int(y1 * h) + 1,
+                max(0, int(x0 * w)) : int(x1 * w) + 1,
+            ]
+            if box.size == 0 or float((box > 0).mean()) < MIN_FREE_FLOOR:
+                out.warnings.append(
+                    ParseWarning(
+                        code="room_already_measured",
+                        message=(
+                            f"VLM reported {extra.name or 'an extra room'} where no "
+                            "unclaimed floor remains; it is a zone of an "
+                            "already-measured room, not a room of its own"
+                        ),
+                        ref=marker,
+                    )
+                )
+                continue
         out.rooms.append(
             RoomDraft(
                 polygon=polygon,
@@ -617,11 +650,25 @@ def _both_sides_indoor(
     )
 
 
+# Beyond this an interior break is not credible as one opening: the corpus's
+# genuine room-to-room mouths top out around 2m, while every wider one sits
+# on a wall the ``solid`` mask lost. Openings are scanned against ``solid``,
+# which by construction drops partitions thinner than ~5px, so on plans that
+# draw thin partitions a whole wall reads as absent (measured on fp6: a 3.7m
+# "passage" between a living-dining space and a bedroom). Pixels cannot
+# settle it — at that stroke width a partition and a glazing band are
+# identical — so the span is reported with its class unresolved rather than
+# asserted. ponytail: a width rule; the real fix is a solid mask that keeps
+# thin partitions, which needs a corpus that draws them at more than 4px.
+MAX_INTERIOR_SPAN_MM = 2500.0
+
+
 def merge_openings(
     candidates: list[OpeningCandidate],
     read: OpeningsRead | None,
     image_shape: tuple[int, int],
     rooms: list[RoomDraft] | None = None,
+    scale: ScaleDraft | None = None,
 ) -> tuple[list[OpeningDraft], list[ElementDraft], list[ParseWarning], list[Unresolved]]:
     drafts: list[OpeningDraft] = []
     elements: list[ElementDraft] = []
@@ -696,6 +743,35 @@ def merge_openings(
             )
             element_type = "sliding_door"
             confidence = min(confidence, 0.7)
+        if (
+            scale is not None
+            and element_type != "unknown_symbol"
+            and _both_sides_indoor(cand.connects, rooms or [])
+        ):
+            per_mm = scale.px_per_mm_x if cand.axis == "h" else scale.px_per_mm_y
+            span_mm = cand.width_px / per_mm if per_mm > 0 else 0.0
+            if span_mm > MAX_INTERIOR_SPAN_MM:
+                warnings.append(
+                    ParseWarning(
+                        code="interior_span_implausible",
+                        message=(
+                            f"candidate {cand.marker} spans {span_mm:.0f}mm between two "
+                            f"indoor rooms and was read as {element_type}; too wide for "
+                            "one opening, and a partition the wall mask missed reads "
+                            "identically — class left unresolved"
+                        ),
+                        ref=cand.marker,
+                    )
+                )
+                element_type = "unknown_symbol"
+                confidence = min(confidence, 0.3)
+                unresolved.append(
+                    Unresolved(
+                        path=f"openings/{cand.marker}/element_type",
+                        reason="interior span too wide to be one opening; "
+                        "the wall mask cannot resolve a thin partition here",
+                    )
+                )
         if element_type in _SWINGING and cand.arc is None:
             unresolved.append(
                 Unresolved(

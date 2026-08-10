@@ -31,7 +31,7 @@ from roomify.merge import (
     reconcile_rooms,
 )
 from roomify.openings import WallSegment, find_openings, measure_bay_protrusion
-from roomify.rooms import detect_rooms
+from roomify.rooms import detect_rooms, uncovered_floor
 from roomify.schema import (
     DEFAULT_DOOR_HEIGHT_MM,
     DEFAULT_LEVEL_HEIGHT_MM,
@@ -188,7 +188,12 @@ def parse(
                              "rooms keep CV geometry with unknown names")
             )
 
-    outcome = merge_rooms(detection.rooms, room_read, work_bgr.shape[:2])
+    outcome = merge_rooms(
+        detection.rooms,
+        room_read,
+        work_bgr.shape[:2],
+        uncovered_floor(walls, detection.rooms),
+    )
     warnings += outcome.warnings
     unresolved += outcome.unresolved
 
@@ -305,7 +310,7 @@ def parse(
         executor.shutdown(wait=False)
 
     opening_drafts, element_drafts, op_warnings, op_unresolved = merge_openings(
-        candidates, openings_read, work_bgr.shape[:2], rooms
+        candidates, openings_read, work_bgr.shape[:2], rooms, scale_draft
     )
     warnings += op_warnings
     unresolved += op_unresolved

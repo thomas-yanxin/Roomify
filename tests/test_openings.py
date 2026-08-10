@@ -221,3 +221,28 @@ def test_no_swing_sector_is_read_at_more_than_a_leaf_width():
     assert mouth[0].arc is None
     # (the same tinted sector at leaf scale still yields a swing —
     # test_tinted_sector_yields_swing)
+
+
+def test_facade_beyond_a_notch_is_exterior_not_unknown():
+    """Outside-ness is the building's silhouette, not its bounding box.
+
+    An L-shaped or diagonal footprint puts most of its facade INSIDE the
+    footprint's bounding box, so a box test calls the open air behind those
+    walls "interior circulation space" — which then reaches the classifier
+    prompt as the wrong adjacency prior.
+    """
+    img = blank()
+    # L-shaped outline; the top-right quadrant is open air, not a room
+    corners = [(100, 100), (300, 100), (300, 250), (500, 250), (500, 400), (100, 400)]
+    for a, b in zip(corners, corners[1:] + corners[:1], strict=True):
+        cv2.line(img, a, b, (WALL_GREY,) * 3, 10)
+    # a window in the notch-facing wall, well inside the bounding box
+    draw_gap(img, 296, 150, 304, 210)
+    for off in (-3, 0, 3):
+        draw_sill(img, 296 + off, 150, 296 + off, 210, grey=130)
+
+    wx, drafts = _drafts(img)
+    cands, segments = find_openings(wx, drafts, img, door_px=40)
+    notch = [c for c in cands if abs(c.center[0] - 300) < 12 and 140 < c.center[1] < 220]
+    assert notch, [c.center for c in cands]
+    assert "exterior" in notch[0].connects, notch[0].connects

@@ -143,10 +143,10 @@ def _building_area(
     inserted into the enclosure mask: doing so would turn an open courtyard
     or deep exterior notch into invented room geometry.
     """
-    return _silhouette(union, footprint)[1]
+    return building_silhouette(union, footprint)[1]
 
 
-def _silhouette(
+def building_silhouette(
     union: np.ndarray, footprint: tuple[int, int, int, int]
 ) -> tuple[np.ndarray, float]:
     """Filled building silhouette mask and its area."""
@@ -230,6 +230,41 @@ def detect_rooms(walls: WallExtraction, min_area_px: float | None = None) -> Roo
     return detection
 
 
+def uncovered_floor(walls: WallExtraction, rooms: list[CVRoom]) -> np.ndarray:
+    """Floor inside the building that no room polygon claims.
+
+    Used both to reclaim vanished rooms (below) and to judge whether a
+    VLM-only room has anywhere to exist: a room the CV genuinely missed
+    stands on unclaimed floor, while a zone of an already-measured room
+    stands on floor that is spoken for.
+    """
+    silhouette, _ = building_silhouette(walls.union, walls.footprint)
+    interior = cv2.bitwise_and(
+        silhouette, cv2.bitwise_not(cv2.dilate(walls.union, np.ones((5, 5), np.uint8)))
+    )
+    # exterior veto: anything reachable from the image border through the
+    # (lightly sealed) mask is outside — an open courtyard's mouth carries
+    # no ink, so its interior floods from the border and must not be
+    # reclaimed, however wall-bounded its other three sides are
+    sealed = cv2.morphologyEx(
+        walls.union, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+    )
+    _, out_labels = cv2.connectedComponents((sealed == 0).astype(np.uint8), connectivity=4)
+    border = np.unique(
+        np.concatenate(
+            [out_labels[0, :], out_labels[-1, :], out_labels[:, 0], out_labels[:, -1]]
+        )
+    )
+    exterior = np.isin(out_labels, border[border != 0])
+    interior = cv2.bitwise_and(interior, cv2.bitwise_not(exterior.astype(np.uint8) * 255))
+    covered = np.zeros_like(silhouette)
+    for room in rooms:
+        cv2.fillPoly(covered, [np.round(room.polygon).astype(np.int32)], 255)
+    return cv2.bitwise_and(
+        interior, cv2.bitwise_not(cv2.dilate(covered, np.ones((7, 7), np.uint8)))
+    )
+
+
 def _recover_uncovered(
     rooms: list[CVRoom], walls: WallExtraction, min_area_px: float
 ) -> list[CVRoom]:
@@ -246,37 +281,10 @@ def _recover_uncovered(
     out). Recovered rooms carry ``recovered=True`` — real measured pixels,
     weaker segmentation evidence.
     """
-    silhouette, _ = _silhouette(walls.union, walls.footprint)
-    interior = cv2.bitwise_and(
-        silhouette, cv2.bitwise_not(cv2.dilate(walls.union, np.ones((5, 5), np.uint8)))
-    )
-    # exterior veto: anything reachable from the image border through the
-    # (lightly sealed) mask is outside — an open courtyard's mouth carries
-    # no ink, so its interior floods from the border and must not be
-    # reclaimed, however wall-bounded its other three sides are
-    sealed = cv2.morphologyEx(
-        walls.union, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
-    )
-    n_out, out_labels = cv2.connectedComponents(
-        (sealed == 0).astype(np.uint8), connectivity=4
-    )
-    border = np.unique(
-        np.concatenate(
-            [out_labels[0, :], out_labels[-1, :], out_labels[:, 0], out_labels[:, -1]]
-        )
-    )
-    exterior = np.isin(out_labels, border[border != 0])
-    interior = cv2.bitwise_and(
-        interior, cv2.bitwise_not(exterior.astype(np.uint8) * 255)
-    )
-    covered = np.zeros_like(silhouette)
-    for room in rooms:
-        cv2.fillPoly(covered, [np.round(room.polygon).astype(np.int32)], 255)
-    uncovered = cv2.bitwise_and(
-        interior, cv2.bitwise_not(cv2.dilate(covered, np.ones((7, 7), np.uint8)))
-    )
     uncovered = cv2.morphologyEx(
-        uncovered, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (9, 9))
+        uncovered_floor(walls, rooms),
+        cv2.MORPH_CLOSE,
+        cv2.getStructuringElement(cv2.MORPH_RECT, (9, 9)),
     )
 
     near_union = cv2.dilate(walls.union, np.ones((11, 11), np.uint8))

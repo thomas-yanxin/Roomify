@@ -504,3 +504,106 @@ def test_sliding_window_between_indoor_rooms_is_a_sliding_door():
     )
     assert drafts[0].element_type == "sliding_window"
     assert warnings == []
+
+
+def test_extra_room_with_no_free_floor_left_is_not_a_room():
+    """Open-plan zones come back as "unmarkered rooms" and must not be emitted.
+
+    The model reports every printed label it sees, so 走廊/玄关 inside a
+    measured 客餐厅 arrive as extra_rooms. Emitting their boxes double-counts
+    the floor and overlaps the polygon that already measured it.
+    """
+    import numpy as np
+
+    from roomify.vlm import RoomRead
+
+    def read(box):
+        return RoomRead.model_validate(
+            {
+                "rooms": [],
+                "extra_rooms": [
+                    {"box_2d": box, "name": "走廊", "room_type": "hallway",
+                     "printed_area_sqm": 9.91, "confidence": 0.9, "not_a_room": False}
+                ],
+            }
+        )
+
+    free = np.zeros((100, 100), np.uint8)
+    free[10:40, 10:40] = 255  # the only unclaimed floor, top-left
+
+    # a box over claimed floor -> rejected, and the reason is recorded
+    outcome = merge_rooms([], read([500, 500, 900, 900]), (100, 100), free)
+    assert outcome.rooms == []
+    assert [w.code for w in outcome.warnings] == ["room_already_measured"]
+
+    # a box over unclaimed floor -> kept as an approximate bbox room
+    outcome = merge_rooms([], read([120, 120, 380, 380]), (100, 100), free)
+    assert [r.name for r in outcome.rooms] == ["走廊"]
+    assert [w.code for w in outcome.warnings] == ["room_geometry_is_bbox"]
+
+    # without the mask the veto cannot run and nothing is dropped
+    outcome = merge_rooms([], read([500, 500, 900, 900]), (100, 100))
+    assert [r.name for r in outcome.rooms] == ["走廊"]
+
+
+def test_wide_interior_span_is_left_unresolved_not_asserted():
+    """A 3m break between two indoor rooms is not one opening.
+
+    Openings are scanned against the ``solid`` mask, which drops partitions
+    thinner than ~5px; on plans that draw them thin a whole wall reads as
+    absent and comes back as a confident "passage". Pixels cannot settle it,
+    so the class is reported unresolved rather than invented.
+    """
+    from dataclasses import dataclass
+
+    from roomify.merge import ScaleDraft, merge_openings
+    from roomify.vlm import OpeningsRead
+
+    @dataclass
+    class _Cand:
+        marker: str = "A"
+        bbox: tuple = (100.0, 200.0, 250.0, 210.0)
+        center: tuple = (175.0, 205.0)
+        axis: str = "h"
+        width_px: float = 150.0  # 3000mm at 0.05 px/mm
+        kind_hint: str = "doorlike"
+        connects: tuple = (0, 1)
+        wall_index: int = 0
+        arc: object = None
+
+    scale = ScaleDraft(0.05, 0.05, "printed_areas", "medium", 0.05, 4, 0)
+    read = OpeningsRead.model_validate(
+        {
+            "candidates": [
+                {"marker": "A", "element_type": "passage", "raw_text": None,
+                 "confidence": 0.9, "is_real": True}
+            ],
+            "extra_elements": [],
+        }
+    )
+    indoor = [_draft(1000.0, None, name="客餐厅"), _draft(1000.0, None, name="次卧")]
+    for room in indoor:
+        room.room_type = "bedroom"
+
+    drafts, _, warnings, unresolved = merge_openings(
+        [_Cand()], read, (1000, 1000), indoor, scale
+    )
+    assert drafts[0].element_type == "unknown_symbol"
+    assert drafts[0].width_px == 150.0  # the measured span is still reported
+    assert drafts[0].confidence <= 0.3
+    assert [w.code for w in warnings] == ["interior_span_implausible"]
+    assert [u.path for u in unresolved] == ["openings/A/element_type"]
+
+    # a door-width break on the same wall is untouched
+    drafts, _, warnings, _ = merge_openings(
+        [_Cand(width_px=45.0)], read, (1000, 1000), indoor, scale
+    )
+    assert drafts[0].element_type == "passage"
+    assert warnings == []
+
+    # so is a wide mouth onto the exterior — only indoor↔indoor is implausible
+    drafts, _, warnings, _ = merge_openings(
+        [_Cand(connects=(0, "exterior"))], read, (1000, 1000), indoor, scale
+    )
+    assert drafts[0].element_type == "passage"
+    assert warnings == []
