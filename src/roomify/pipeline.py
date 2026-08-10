@@ -27,6 +27,7 @@ from roomify.merge import (
     estimate_scale,
     merge_openings,
     merge_rooms,
+    reconcile_rooms,
 )
 from roomify.openings import WallSegment, find_openings, measure_bay_protrusion
 from roomify.rooms import detect_rooms
@@ -196,7 +197,15 @@ def parse(
     scale_draft, scale_warnings = estimate_scale(chains, walls, outcome.rooms)
     warnings += scale_warnings
 
-    checked = apply_area_checks(outcome.rooms, scale_draft)
+    # printed labels are ink truth; with a scale in hand, repair the
+    # label↔polygon pairings the VLM fumbled and merge fragments whose sum
+    # matches an otherwise-unplaceable label (every repair is logged)
+    reconciled, reconcile_warnings = reconcile_rooms(
+        outcome.rooms, scale_draft, walls.thickness_px
+    )
+    warnings += reconcile_warnings
+
+    checked = apply_area_checks(reconciled, scale_draft)
     warnings += checked.warnings
     rooms = checked.rooms
 
@@ -436,16 +445,29 @@ def _assemble(
         "rooms": {draft.marker: room_ids[i] for i, draft in enumerate(rooms)},
         "openings": {draft.marker: opening_ids[i] for i, draft in enumerate(opening_drafts)},
     }
+    rooms_by_marker = {draft.marker: draft for draft in rooms}
     marker_to_id = ids_by_collection["rooms"] | ids_by_collection["openings"]
     warnings = [
         warning.model_copy(update={"ref": marker_to_id.get(warning.ref, warning.ref)})
         for warning in warnings
+        if warning.code != "room_semantics_missing"
+        or (
+            warning.ref in rooms_by_marker
+            and rooms_by_marker[warning.ref].name is None
+        )
     ]
     remapped_unresolved: list[Unresolved] = []
     for item in unresolved:
         parts = item.path.split("/", 2)
         if len(parts) == 3 and parts[0] in ids_by_collection:
-            parts[1] = ids_by_collection[parts[0]].get(parts[1], parts[1])
+            marker = parts[1]
+            if marker not in ids_by_collection[parts[0]]:
+                continue
+            if parts[0] == "rooms" and parts[2] == "name":
+                draft = rooms_by_marker[marker]
+                if draft.name is not None:
+                    continue
+            parts[1] = ids_by_collection[parts[0]][marker]
         remapped_unresolved.append(item.model_copy(update={"path": "/".join(parts)}))
     unresolved = remapped_unresolved
 

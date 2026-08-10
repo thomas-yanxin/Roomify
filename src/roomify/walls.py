@@ -57,6 +57,10 @@ class WallExtraction:
     # for functional splits, sealed like walls but tagged on the rooms they
     # bound. None when the plan draws no dashes.
     zones: np.ndarray | None = None
+    # Door furniture (swing arcs + door leaves): thin strokes hanging off
+    # the wall network. Sill-less arc-style plans seal their doorways with
+    # exactly these strokes — the leaf+arc chain connects jamb to jamb.
+    door_hints: np.ndarray | None = None
 
 
 def estimate_wall_bands(bgr: np.ndarray) -> list[tuple[int, int]]:
@@ -278,6 +282,8 @@ def extract_walls(bgr: np.ndarray) -> WallExtraction:
     angles = tuple(accepted_angles)
 
     union = cv2.bitwise_or(solid, lines)
+    stroke_bin = _stroke_binary(gray, footprint)
+    zones = _zone_lines(stroke_bin, union, footprint, angles)
     return WallExtraction(
         solid=solid,
         lines=lines,
@@ -288,7 +294,8 @@ def extract_walls(bgr: np.ndarray) -> WallExtraction:
         thickness_px=thickness,
         footprint=footprint,
         angles=angles,
-        zones=_zone_lines(_stroke_binary(gray, footprint), union, footprint, angles),
+        zones=zones,
+        door_hints=_door_hints(stroke_bin, union, zones),
     )
 
 
@@ -346,8 +353,11 @@ def _zone_lines(
     angles: tuple[float, ...] = (),
 ) -> np.ndarray | None:
     """Dashed zone dividers at any wall angle (see ``_zone_lines_axis``)."""
-    zones = _zone_lines_axis(binary, structure)
     h, w = binary.shape
+    # length gate from the SOURCE frame: rotated canvases are larger and
+    # would silently raise the bar on exactly the frames that need it
+    length = max(40, min(h, w) // 16)
+    zones = _zone_lines_axis(binary, structure, length)
     for angle in angles:
         m = cv2.getRotationMatrix2D((w / 2.0, h / 2.0), angle, 1.0)
         cos, sin = abs(m[0, 0]), abs(m[0, 1])
@@ -358,7 +368,7 @@ def _zone_lines(
         rot_s = cv2.warpAffine(
             structure, m, (nw, nh), flags=cv2.INTER_NEAREST, borderValue=0
         )
-        z = _zone_lines_axis(rot_b, rot_s)
+        z = _zone_lines_axis(rot_b, rot_s, length)
         if z is None:
             continue
         z_back = cv2.warpAffine(
@@ -368,25 +378,28 @@ def _zone_lines(
     return zones
 
 
-def _zone_lines_axis(binary: np.ndarray, structure: np.ndarray) -> np.ndarray | None:
+def _zone_lines_axis(
+    binary: np.ndarray, structure: np.ndarray, length: int | None = None
+) -> np.ndarray | None:
     """Dashed zone dividers: thin dash runs fused into straight lines.
 
     Listing plans split open spaces (玄关/走廊/餐厅) with dashed lines and
     print a per-zone area — the dashes are drawn evidence of a boundary, so
     sealing along them aligns measured geometry with the printed truth.
-    Discriminating them from label text (which also fuses into short rows):
-    a zone divider spans structure-to-structure, so both endpoints must
-    anchor on the wall mask; a floating text row anchors nowhere.
+    Against the look-alikes: label text fuses into short unanchored rows;
+    wood grain fuses into CONTINUOUS lines (dashness ~1); hatch/tile texture
+    is 2D-dense around any run it produces. Dividers legitimately cross each
+    other and end on door arcs, so runs may anchor on OTHER long runs.
     """
     dist = cv2.distanceTransform(binary, cv2.DIST_L2, 5)
     thin = np.where(dist <= 2.0, binary, np.uint8(0))
     h, w = binary.shape
-    length = max(40, min(h, w) // 16)
-    anchor = cv2.dilate(structure, np.ones((13, 13), np.uint8))
-    zones = np.zeros_like(binary)
-    found = False
-    # 3px-tall/wide join: rotated-frame dashes carry ±1px resampling
-    # stair-steps that a single-row kernel cannot bridge
+    if length is None:
+        length = max(40, min(h, w) // 16)
+    anchor_structure = cv2.dilate(structure, np.ones((13, 13), np.uint8))
+
+    candidates: list[tuple[np.ndarray, tuple[int, int], tuple[int, int]]] = []
+    long_runs = np.zeros_like(binary)
     for join, run in (((9, 3), (length, 1)), ((3, 9), (1, length))):
         fused = cv2.morphologyEx(
             thin, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, join)
@@ -409,13 +422,23 @@ def _zone_lines_axis(binary: np.ndarray, structure: np.ndarray) -> np.ndarray | 
             dashness = float(np.count_nonzero(pre)) / max(1, comp_px)
             if not 0.25 <= dashness <= 0.85:
                 continue
-            # isolation: grain comes in parallel packs — a real divider has
-            # no thin siblings in a band around it
+            # Texture veto by one-sided OTHERS-density: hatch/tile fields are
+            # 2D-dense on BOTH sides of any run they spawn, while a real
+            # divider keeps at least one side mostly empty — a bathroom's
+            # dry/wet dashed boundary legitimately borders its own dot-hatch
+            # fill on one side. Own pixels never count (a 4px dashed line
+            # already fills ~10% of its own band).
             pad = 8
-            yl, yh = max(0, y - (pad if bw >= bh else 0)), y + bh + (pad if bw >= bh else 0)
-            xl, xh = max(0, x - (0 if bw >= bh else pad)), x + bw + (0 if bw >= bh else pad)
-            band_px = int(np.count_nonzero(thin[yl:yh, xl:xh]))
-            if band_px > 1.8 * max(1, int(np.count_nonzero(pre))):
+            if bw >= bh:  # horizontal run: bands above and below
+                sides = (thin[max(0, y - pad) : y, x : x + bw],
+                         thin[y + bh : min(h, y + bh + pad), x : x + bw])
+            else:
+                sides = (thin[y : y + bh, max(0, x - pad) : x],
+                         thin[y : y + bh, x + bw : min(w, x + bw + pad)])
+            densities = [
+                np.count_nonzero(side) / side.size for side in sides if side.size
+            ]
+            if not densities or min(densities) > 0.06:
                 continue
             ys, xs = np.nonzero(component)
             if bw >= bh:  # horizontal run: anchor both x-extremes
@@ -424,10 +447,79 @@ def _zone_lines_axis(binary: np.ndarray, structure: np.ndarray) -> np.ndarray | 
             else:
                 p1 = (x + int(xs[np.argmin(ys)]), y + int(ys.min()))
                 p2 = (x + int(xs[np.argmax(ys)]), y + int(ys.max()))
-            if anchor[p1[1], p1[0]] and anchor[p2[1], p2[0]]:
-                zones[labels == i] = 255
-                found = True
+            mask = np.zeros_like(binary)
+            mask[y : y + bh, x : x + bw][component] = 255
+            candidates.append((mask, p1, p2))
+            long_runs = cv2.bitwise_or(long_runs, mask)
+
+    if not candidates:
+        return None
+    # Dividers may meet each other at zone corners (玄关's two dashed
+    # sides), but a run must never satisfy its own free endpoint.
+    zones = np.zeros_like(binary)
+    found = False
+    for mask, p1, p2 in candidates:
+        other_runs = cv2.bitwise_and(long_runs, cv2.bitwise_not(mask))
+        anchor_any = cv2.bitwise_or(
+            anchor_structure, cv2.dilate(other_runs, np.ones((13, 13), np.uint8))
+        )
+        first, second = anchor_any[p1[1], p1[0]], anchor_any[p2[1], p2[0]]
+        if (anchor_structure[p1[1], p1[0]] or anchor_structure[p2[1], p2[0]]) and (
+            first and second
+        ):
+            zones = cv2.bitwise_or(zones, mask)
+            found = True
     return zones if found else None
+
+
+def _door_hints(
+    binary: np.ndarray,
+    union: np.ndarray,
+    zones: np.ndarray | None,
+) -> np.ndarray | None:
+    """Thin strokes hanging off the wall network: door leaves and swing arcs.
+
+    Arc-style plans draw no sill across the doorway — the only strokes
+    spanning the gap are the leaf (a short straight stroke from the hinge
+    jamb) and the quarter-circle arc (leaf tip to the far jamb). Both start
+    ON the wall network, so admitting wall-adjacent thin components lets the
+    drawing seal its own doorways. Size caps keep beds and sofas out; a
+    stray bedside table against a wall costs a sub-room-size nook, not a
+    fake divider.
+    """
+    dist = cv2.distanceTransform(binary, cv2.DIST_L2, 5)
+    thin = np.where(dist <= 2.0, binary, np.uint8(0))
+    if zones is not None:
+        thin = cv2.bitwise_and(thin, cv2.bitwise_not(zones))
+    # Arcs and leaves are drawn TOUCHING their jamb — connected to the wall
+    # network they'd merge into one giant component and fail the size gate.
+    # Cut the wall out first so each piece of door furniture stands alone,
+    # then re-join hairline breaks (some plans draw the swing arc itself as
+    # a fine dash-dot curve).
+    thin = cv2.bitwise_and(
+        thin, cv2.bitwise_not(cv2.dilate(union, np.ones((3, 3), np.uint8)))
+    )
+    thin = cv2.morphologyEx(thin, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
+    near_wall = cv2.dilate(union, np.ones((9, 9), np.uint8))
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(thin, connectivity=8)
+    hints = np.zeros_like(binary)
+    found = False
+    for i in range(1, n):
+        x, y, bw, bh, area = stats[i]
+        long_side = max(bw, bh)
+        if not 10 <= long_side <= 100:
+            continue
+        component = labels[y : y + bh, x : x + bw] == i
+        touching = near_wall[y : y + bh, x : x + bw][component]
+        if not touching.any():
+            continue
+        # Closed curves (leaf+arc sector boundaries, tinted-sector edges)
+        # are allowed: the swing-sector pocket they excise is suppressed in
+        # room extraction, and on plans where hints only cost coverage the
+        # plain candidate variant wins the selection anyway.
+        hints[y : y + bh, x : x + bw][component] = 255
+        found = True
+    return hints if found else None
 
 
 def _stroke_binary(
@@ -479,6 +571,17 @@ def _thin_lines(
     # frame. Thin diagonal walls anti-alias too slim for the solid mask's
     # thickness test, so this is their only route into the enclosure union —
     # and an exact-45° line kernel would miss a 43° family entirely.
+    if angles:
+        # Dot-hatch immunity: the rotated pass pre-closes small breaks (see
+        # below), and a bathroom's dot field lines up diagonally at almost
+        # any angle — pure dots must never reach that join. Mullion-broken
+        # glazing fragments are elongated (≥5px) and pass.
+        n_comp, comp_labels, comp_stats, _ = cv2.connectedComponentsWithStats(
+            binary, connectivity=8
+        )
+        elongated = np.maximum(comp_stats[:, 2], comp_stats[:, 3]) > 4
+        elongated[0] = False
+        binary = np.where(elongated[comp_labels], binary, np.uint8(0))
     for angle in angles:
         m = cv2.getRotationMatrix2D((w / 2.0, h / 2.0), angle, 1.0)
         cos, sin = abs(m[0, 0]), abs(m[0, 1])

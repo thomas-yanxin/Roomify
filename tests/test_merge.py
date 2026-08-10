@@ -116,6 +116,23 @@ def test_extra_room_becomes_bbox_with_warning():
     assert any(w.code == "room_geometry_is_bbox" for w in outcome.warnings)
 
 
+def test_unlabelled_extra_room_keeps_known_type_and_bbox():
+    read = RoomRead.model_validate(
+        {
+            "rooms": {},
+            "extra_rooms": [
+                {"box_2d": [100, 200, 300, 600], "room_type": "balcony"}
+            ],
+        }
+    )
+
+    outcome = merge_rooms([], read, (1000, 1000))
+
+    assert len(outcome.rooms) == 1
+    assert outcome.rooms[0].room_type == "balcony"
+    assert outcome.rooms[0].area_px == pytest.approx(400 * 200)
+
+
 # ------------------------------------------------------------- estimate_scale
 
 
@@ -283,3 +300,99 @@ def test_scale_falls_back_to_areas_when_chains_disagree():
     assert scale.method == "printed_areas"
     assert scale.px_per_mm_x == scale.px_per_mm_y == pytest.approx(0.032, rel=0.01)
     assert any(w.code == "scale_disagreement" for w in warnings)
+
+
+def _sq_draft(x0, y0, side, printed=None, name=None, marker="m"):
+    ring = np.array(
+        [[x0, y0], [x0 + side, y0], [x0 + side, y0 + side], [x0, y0 + side]],
+        dtype=np.float64,
+    )
+    return RoomDraft(
+        polygon=ring,
+        area_px=float(side * side),
+        perimeter_px=4.0 * side,
+        edge_lengths_px=[float(side)] * 4,
+        seed=(x0 + side / 2, y0 + side / 2),
+        source="cv+vlm" if printed or name else "cv",
+        confidence=0.8,
+        name=name,
+        printed_area_sqm=printed,
+        marker=marker,
+    )
+
+
+def _scale_1600():  # 40 px/m → 1600 px² per m²
+    return ScaleDraft(
+        px_per_mm_x=0.04, px_per_mm_y=0.04, method="printed_areas",
+        confidence="medium", px_per_mm_from_areas=0.04,
+        n_rooms_used=5, n_chain_values_used=0,
+    )
+
+
+def test_reconcile_repairs_swapped_labels():
+    from roomify.merge import reconcile_rooms
+
+    # 10㎡ and 20㎡ rooms with their printed labels SWAPPED by the VLM
+    rooms = [
+        _sq_draft(0, 0, 126.5, printed=20.0, name="客厅", marker="1"),    # ~10㎡
+        _sq_draft(300, 0, 179, printed=10.0, name="次卧", marker="2"),    # ~20㎡
+        _sq_draft(600, 0, 126.5, printed=10.1, name="主卧", marker="3"),  # good pair
+    ]
+    fixed, warns = reconcile_rooms(rooms, _scale_1600(), 10.0)
+    by_marker = {r.marker: r for r in fixed}
+    assert by_marker["1"].printed_area_sqm == 10.0 and by_marker["1"].name == "次卧"
+    assert by_marker["2"].printed_area_sqm == 20.0 and by_marker["2"].name == "客厅"
+    assert by_marker["3"].printed_area_sqm == 10.1  # untouched
+    assert sum(1 for w in warns if w.code == "label_reassigned") == 2
+
+
+def test_reconcile_merges_adjacent_fragments():
+    from roomify.merge import reconcile_rooms
+
+    # a 4.5㎡ label sits on a 1.5㎡ fragment; the other 3㎡ fragment is
+    # unnamed and 6px away — merged they match the label
+    rooms = [
+        _sq_draft(0, 0, 49, printed=4.5, name="卫生间", marker="1"),   # 1.5㎡
+        _sq_draft(55, 0, 69.3, marker="2"),                            # 3.0㎡ unnamed
+        _sq_draft(600, 0, 126.5, printed=10.0, name="主卧", marker="3"),
+    ]
+    fixed, warns = reconcile_rooms(rooms, _scale_1600(), 8.0)
+    assert len(fixed) == 2
+    merged = next(r for r in fixed if r.name == "卫生间")
+    assert merged.printed_area_sqm == 4.5
+    assert merged.area_px == pytest.approx(4.5 * 1600, rel=0.25)
+    assert any(w.code == "rooms_merged_for_label" for w in warns)
+
+
+def test_reconcile_restores_hopeless_labels_in_place():
+    from roomify.merge import reconcile_rooms
+
+    # 0.01㎡ duct labels and glazing-eaten balconies: the label fits nothing
+    # better, but it was PRINTED inside this room — keep the original
+    # pairing (the deviation flag downstream tells the mismatch truth).
+    rooms = [
+        _sq_draft(0, 0, 126.5, printed=10.0, name="主卧", marker="1"),  # good
+        _sq_draft(300, 0, 60, printed=15.0, name="阳台", marker="2"),   # 2.25㎡ vs 15
+    ]
+    fixed, warns = reconcile_rooms(rooms, _scale_1600(), 8.0)
+    by_marker = {r.marker: r for r in fixed}
+    assert by_marker["1"].printed_area_sqm == 10.0  # untouched
+    assert by_marker["2"].printed_area_sqm == 15.0 and by_marker["2"].name == "阳台"
+    assert not any(w.code == "label_unplaced" for w in warns)
+
+
+def test_reconcile_chooses_closest_fragment_sum():
+    from roomify.merge import reconcile_rooms
+
+    rooms = [
+        _sq_draft(-300, 0, (20 * 1600) ** 0.5, printed=10.0, name="目标", marker="0"),
+        _sq_draft(0, 0, 6000**0.5, marker="1"),
+        _sq_draft(82, 0, 7600**0.5, marker="2"),
+        _sq_draft(0, 82, 10000**0.5, marker="3"),
+    ]
+
+    fixed, _ = reconcile_rooms(rooms, _scale_1600(), 8.0)
+    markers = {room.marker for room in fixed}
+
+    assert "2" in markers  # 85% pair left alone
+    assert "3" not in markers  # exact 100% pair merged with marker 1

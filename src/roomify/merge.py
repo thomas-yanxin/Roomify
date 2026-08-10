@@ -21,6 +21,7 @@ degrades gracefully (with the appropriate confidence and warnings).
 
 from __future__ import annotations
 
+import math
 import statistics
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING
@@ -189,6 +190,196 @@ def merge_rooms(
             )
         )
     return out
+
+
+RECONCILE_RATIO = 1.4  # a pairing is a misfit beyond ±40% of expectation
+RECONCILE_FIT = 1.25  # a repair must land within ±25% to be adopted
+MERGE_SUM_TOL = 0.20  # fragment sums must match the label within ±20%
+
+
+def reconcile_rooms(
+    rooms: list[RoomDraft],
+    scale: ScaleDraft | None,
+    wall_thickness_px: float,
+) -> tuple[list[RoomDraft], list[ParseWarning]]:
+    """Repair label↔polygon pairing using the printed areas as ink truth.
+
+    The VLM reads printed labels reliably but attaches them to overlay
+    markers noisily once fragments multiply. Measured pixel areas are exact,
+    so a pairing whose measured/printed ratio strays far from the plan-wide
+    median is a wrong ATTACHMENT, not a wrong measurement. Three repairs,
+    all confined to the misfit subset (well-fitting rooms are never touched)
+    and all logged:
+
+    1. reassign labels among misfit rooms (labels move with their printed
+       value — name and area are one piece of ink);
+    2. merge ADJACENT misfit/unnamed fragments whose joint area matches an
+       otherwise-unplaceable label (a room chopped by a texture accident);
+    3. restore a label in place when no better geometry fits it.
+    """
+    import itertools
+
+    from shapely.geometry import Polygon as ShapelyPolygon
+    from shapely.ops import unary_union
+
+    warnings: list[ParseWarning] = []
+    if scale is None or len(rooms) < 2:
+        return rooms, warnings
+    px_per_sqm = scale.px_per_mm_x * scale.px_per_mm_y * 1e6
+
+    def misfit_of(area_px: float, printed: float) -> float:
+        return abs(math.log(area_px / max(printed * px_per_sqm, 1e-9)))
+
+    log_bad = math.log(RECONCILE_RATIO)
+    log_fit = math.log(RECONCILE_FIT)
+
+    # cv-measured rooms only: bbox geometry cannot anchor a repair
+    misfits = [
+        i
+        for i, r in enumerate(rooms)
+        if r.source != "vlm"
+        and r.printed_area_sqm
+        and misfit_of(r.area_px, r.printed_area_sqm) > log_bad
+    ]
+    unnamed = [
+        i
+        for i, r in enumerate(rooms)
+        if r.source != "vlm" and not r.printed_area_sqm and not r.name
+    ]
+    if not misfits:
+        return rooms, warnings
+
+    labels: list[tuple[str | None, str, float, int]] = []
+    for i in misfits:
+        printed_area = rooms[i].printed_area_sqm
+        assert printed_area is not None
+        labels.append((rooms[i].name, rooms[i].room_type, printed_area, i))
+    slots = sorted(set(misfits) | set(unnamed))
+
+    polys: dict[int, ShapelyPolygon] = {}
+    for i in slots:
+        try:
+            p = ShapelyPolygon(rooms[i].polygon)
+            polys[i] = p if p.is_valid else p.buffer(0)
+        except Exception:
+            polys[i] = ShapelyPolygon()
+
+    out = list(rooms)
+    for i in misfits:  # detach the misfit labels; slots start clean
+        out[i] = replace(out[i], name=None, printed_area_sqm=None,
+                         room_type="unknown_space", confidence=0.3)
+
+    gap = max(8.0, 1.5 * wall_thickness_px)
+    used: set[int] = set()
+    for name, room_type, printed, origin in labels:
+        expected = printed * px_per_sqm
+        free = [i for i in slots if i not in used]
+        # single-room fit first
+        best_i, best_m = None, log_fit
+        for i in free:
+            m = misfit_of(out[i].area_px, printed)
+            if m < best_m:
+                best_i, best_m = i, m
+        # fragment merge: pairs/triples of mutually adjacent free rooms
+        best_group = None
+        best_group_m = math.inf
+        if best_i is None:
+            for size in (2, 3):
+                for combo in itertools.combinations(free, size):
+                    total = sum(out[i].area_px for i in combo)
+                    group_m = abs(math.log(max(total, 1e-9) / expected))
+                    if group_m > math.log(1 + MERGE_SUM_TOL):
+                        continue
+                    if all(
+                        polys[a].distance(polys[b]) <= gap
+                        for a, b in itertools.combinations(combo, 2)
+                    ) and group_m < best_group_m:
+                        best_group = combo
+                        best_group_m = group_m
+        if best_i is not None:
+            out[best_i] = replace(
+                out[best_i],
+                name=name,
+                room_type=room_type,
+                printed_area_sqm=printed,
+                source="cv+vlm",
+                confidence=0.6,
+            )
+            used.add(best_i)
+            warnings.append(
+                ParseWarning(
+                    code="label_reassigned",
+                    message=f"printed label {name or '?'} ({printed}㎡) re-attached "
+                    "to the room whose measured area matches it",
+                    ref=out[best_i].marker,
+                )
+            )
+        elif best_group is not None:
+            merged_poly = unary_union(
+                [polys[i] for i in best_group]
+            ).buffer(gap / 2).buffer(-gap / 2)
+            if merged_poly.geom_type == "MultiPolygon":
+                merged_poly = max(merged_poly.geoms, key=lambda g: g.area)
+            ring = np.asarray(merged_poly.exterior.coords[:-1], dtype=np.float64)
+            closed = np.vstack([ring, ring[:1]])
+            edges = np.linalg.norm(np.diff(closed, axis=0), axis=1)
+            seed = merged_poly.representative_point()
+            keeper = min(best_group)
+            out[keeper] = replace(
+                out[keeper],
+                polygon=ring,
+                area_px=float(merged_poly.area),
+                perimeter_px=float(edges.sum()),
+                edge_lengths_px=[float(e) for e in edges],
+                seed=(float(seed.x), float(seed.y)),
+                name=name,
+                room_type=room_type,
+                printed_area_sqm=printed,
+                source="cv+vlm",
+                confidence=0.5,
+                zone_bounded=any(out[i].zone_bounded for i in best_group),
+            )
+            used.update(best_group)
+            for i in best_group:
+                if i != keeper:
+                    out[i] = None  # type: ignore[call-overload]
+            warnings.append(
+                ParseWarning(
+                    code="rooms_merged_for_label",
+                    message=(
+                        f"{len(best_group)} adjacent fragments merged: their joint "
+                        f"area matches the printed label {name or '?'} ({printed}㎡)"
+                    ),
+                    ref=out[keeper].marker,
+                )
+            )
+        elif origin not in used and out[origin] is not None:
+            # No better home anywhere: the label was PRINTED inside this
+            # room, and that spatial certainty outranks the area mismatch
+            # (0.01㎡ duct labels, glazing-eaten balconies). Restore the
+            # original pairing untouched — the deviation flag still tells
+            # the truth about the mismatch.
+            out[origin] = replace(
+                out[origin],
+                name=name,
+                room_type=room_type,
+                printed_area_sqm=printed,
+                source="cv+vlm",
+                confidence=rooms[origin].confidence,
+            )
+            used.add(origin)
+        else:
+            warnings.append(
+                ParseWarning(
+                    code="label_unplaced",
+                    message=(
+                        f"printed label {name or '?'} ({printed}㎡) matches no "
+                        "measured room or adjacent fragment group; left unassigned"
+                    ),
+                )
+            )
+
+    return [r for r in out if r is not None], warnings
 
 
 def estimate_scale(

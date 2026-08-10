@@ -25,7 +25,8 @@ def test_fallback_ladder_bridges_bare_door_gaps():
     cv2.line(img, (300, 100), (300, 400), (WALL_GREY,) * 3, 8)
     draw_gap(img, 294, 200, 306, 240)  # 40px bare doorway
     detection = detect_rooms(extract_walls(img))
-    assert detection.strategy.startswith("directional_close")
+    # bare gaps resolve only via fallback closes → composite reports that
+    assert detection.strategy == "composite"
     assert len(detection.rooms) == 2
 
 
@@ -152,3 +153,60 @@ def test_label_text_row_is_not_a_zone_divider():
     det = detect_rooms(extract_walls(img))
     assert len(det.rooms) == 1
     assert not det.rooms[0].zone_bounded
+
+
+def test_dot_hatch_room_survives_composition():
+    # A dot-hatched bathroom only exists at the 5px close (bigger closes
+    # solidify its texture into mask); the neighbouring room needs nothing.
+    # Composition must keep both instead of electing one close size.
+    img = blank()
+    draw_wall_rect(img, 100, 100, 500, 400, thickness=10)
+    cv2.line(img, (300, 100), (300, 400), (WALL_GREY,) * 3, 8)
+    draw_gap(img, 296, 200, 304, 240)
+    for x in (296, 304):
+        cv2.line(img, (x, 200), (x, 240), (120, 120, 120), 1)
+    for y in range(115, 390, 7):
+        for x in range(115, 285, 7):
+            img[y : y + 2, x : x + 2] = 60
+    det = detect_rooms(extract_walls(img))
+    assert len(det.rooms) == 2, [r.area_px for r in det.rooms]
+
+
+def test_composite_keeps_stable_parent_and_local_room():
+    from roomify.rooms import CVRoom, RoomDetection, _composite
+
+    def rect(x0, y0, x1, y1):
+        polygon = np.array([[x0, y0], [x1, y0], [x1, y1], [x0, y1]], dtype=float)
+        width, height = x1 - x0, y1 - y0
+        return CVRoom(
+            polygon=polygon,
+            area_px=width * height,
+            perimeter_px=2 * (width + height),
+            edge_lengths_px=[width, height, width, height],
+            seed=((x0 + x1) / 2, (y0 + y1) / 2),
+        )
+
+    parent = rect(0, 0, 350, 200)
+    local = rect(400, 0, 500, 100)
+    left, right = rect(0, 0, 175, 200), rect(175, 0, 350, 200)
+    candidates = [RoomDetection([parent, local], "close5")]
+    candidates += [RoomDetection([parent], f"close{i}") for i in range(5)]
+    candidates.append(RoomDetection([left, right], "one-off-split"))
+
+    result = _composite(candidates, building_area=100_000)
+
+    assert [room.area_px for room in result.rooms] == [70_000, 10_000]
+
+
+def test_one_ended_dashed_line_is_not_a_zone_boundary():
+    img = blank()
+    draw_wall_rect(img, 100, 100, 500, 400, thickness=10)
+    for x in range(108, 300, 12):
+        cv2.line(img, (x, 250), (x + 6, 250), (120, 120, 120), 2)
+
+    walls = extract_walls(img)
+    detection = detect_rooms(walls)
+
+    assert walls.zones is None
+    assert len(detection.rooms) == 1
+    assert not detection.rooms[0].zone_bounded

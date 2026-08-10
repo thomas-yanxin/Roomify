@@ -30,8 +30,6 @@ from roomify.walls import WallExtraction
 MIN_COMPACTNESS = 0.03  # 4πA/P²; furniture outlines and slivers score lower
 MIN_ASPECT = 0.1  # min-area-rect aspect; rooms are not 10:1 threads
 MAX_AREA_RATIO = 0.6  # of image; larger = the exterior leaked in
-MIN_COVERAGE = 0.55  # rooms-to-silhouette ratio below this = rooms went missing
-MAX_LARGEST_RATIO = 0.65  # one room above this = door gaps merged the voids
 # A 900mm door is 6-10% of a typical dwelling's dimension, so the sweep must
 # reach past 0.10 to bridge bare (sill-less) doorways.
 FALLBACK_GAP_RATIOS = (0.02, 0.04, 0.06, 0.08, 0.10, 0.12)
@@ -125,69 +123,155 @@ def detect_rooms(walls: WallExtraction, min_area_px: float | None = None) -> Roo
         # dashed zone dividers seal like walls; the rooms they bound carry
         # zone_bounded=True so downstream can flag the weaker evidence
         union = cv2.bitwise_or(union, walls.zones)
+    # Door leaves + swing arcs are the drawing's own strokes across
+    # sill-less doorways, but on tinted-sector plans they excise the swing
+    # sector from its room. So they seal a PARALLEL candidate set only, and
+    # the selector below arbitrates: sill-sealed plans keep the plain
+    # variant, arc-style leaky plans win with the hinted one.
+    variants: list[tuple[np.ndarray, np.ndarray | None, str]] = [(union, None, "")]
+    if walls.door_hints is not None:
+        variants.append(
+            (cv2.bitwise_or(union, walls.door_hints), walls.door_hints, "+door_hints")
+        )
     kernel5 = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
 
     x0, y0, x1, y1 = walls.footprint
     max_dim = max(x1 - x0, y1 - y0)
     candidates: list[RoomDetection] = []
-    work = _sealed(
-        union, walls.angles, lambda m: cv2.morphologyEx(m, cv2.MORPH_CLOSE, kernel5)
-    )
-    candidates.append(
-        RoomDetection(rooms=_holes_to_rooms(work, walls, min_area_px), strategy="close5")
-    )
-    for ratio in FALLBACK_GAP_RATIOS:
-        gap = max(6, int(ratio * max_dim))
-
-        def directional(mask: np.ndarray, gap: int = gap) -> np.ndarray:
-            out = cv2.morphologyEx(
-                mask, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (gap, 3))
-            )
-            return cv2.morphologyEx(
-                out, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (3, gap))
-            )
-
-        work = _sealed(union, walls.angles, directional)
+    for base, hints, tag in variants:
+        work = _sealed(
+            base, walls.angles, lambda m: cv2.morphologyEx(m, cv2.MORPH_CLOSE, kernel5)
+        )
         candidates.append(
             RoomDetection(
-                rooms=_holes_to_rooms(work, walls, min_area_px),
-                strategy=f"directional_close({gap}px)",
+                rooms=_holes_to_rooms(work, walls, min_area_px, hints),
+                strategy=f"close5{tag}",
             )
         )
+        for ratio in FALLBACK_GAP_RATIOS:
+            gap = max(6, int(ratio * max_dim))
 
-    # Among complete-looking candidates: big closes both split merged voids
-    # (good) and eat floor area off small rooms (bad), so first demand
-    # near-best coverage, then take the most SIGNIFICANT rooms (≥1% of the
-    # silhouette — slivers can't buy a bigger close), ties to the smallest
-    # close (least invented mask material).
-    def coverage(det: RoomDetection) -> float:
-        return sum(r.area_px for r in det.rooms) / max(1.0, building_area)
+            def directional(mask: np.ndarray, gap: int = gap) -> np.ndarray:
+                out = cv2.morphologyEx(
+                    mask, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (gap, 3))
+                )
+                return cv2.morphologyEx(
+                    out, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (3, gap))
+                )
 
-    def significant(det: RoomDetection) -> int:
-        return sum(1 for r in det.rooms if r.area_px >= 0.01 * building_area)
+            work = _sealed(base, walls.angles, directional)
+            candidates.append(
+                RoomDetection(
+                    rooms=_holes_to_rooms(work, walls, min_area_px, hints),
+                    strategy=f"directional_close({gap}px){tag}",
+                )
+            )
 
-    complete = [c for c in candidates if _looks_complete(c.rooms, building_area)]
-    if complete:
-        floor = max(coverage(c) for c in complete) - 0.05
-        return max((c for c in complete if coverage(c) >= floor), key=significant)
-    return max(candidates, key=lambda c: len(c.rooms))
+    return _composite(candidates, building_area)
 
 
-def _looks_complete(rooms: list[CVRoom], building_area: float) -> bool:
-    """A plausible segmentation: rooms cover most of the building silhouette
-    and no single 'room' spans it — an oversized largest void means door gaps
-    merged several real rooms (the case the fallback ladder exists to fix).
+def _composite(candidates: list[RoomDetection], building_area: float) -> RoomDetection:
+    """Per-void composition across all sealing candidates.
+
+    One close size cannot serve every room: a dot-hatched bathroom only
+    survives the 5px close (anything bigger solidifies its texture), while
+    the open-plan zones next door only split under a 23px close. So instead
+    of electing one candidate, cluster the rooms of ALL candidates by IoU
+    and pick each cluster on its own: clusters seen at many rungs are real
+    (texture artifacts and merge accidents are rung-specific), the version
+    from the smallest close carries the least invented mask, and overlap
+    beats supersets — a merged mega-void loses to the split pieces that
+    appear more consistently.
     """
-    if not rooms:
-        return False
-    building_area = max(1.0, building_area)
-    coverage = sum(r.area_px for r in rooms) / building_area
-    largest_ratio = rooms[0].area_px / building_area  # rooms sorted desc
-    return coverage >= MIN_COVERAGE and largest_ratio <= MAX_LARGEST_RATIO
+    from shapely.geometry import Polygon as ShapelyPolygon
+
+    clusters: list[dict] = []
+    for cand in candidates:
+        for room in cand.rooms:
+            try:
+                poly = ShapelyPolygon(room.polygon)
+                if not poly.is_valid:
+                    poly = poly.buffer(0)
+                if poly.is_empty or poly.area <= 0:
+                    continue
+            except Exception:
+                continue
+            for cl in clusters:
+                inter = poly.intersection(cl["poly"]).area
+                if inter / max(poly.union(cl["poly"]).area, 1.0) >= 0.55:
+                    cl["count"] += 1
+                    if room.area_px > cl["room"].area_px:
+                        cl["room"], cl["poly"], cl["src"] = room, poly, cand.strategy
+                    break
+            else:
+                clusters.append(
+                    {"poly": poly, "room": room, "count": 1, "src": cand.strategy}
+                )
+
+    clusters.sort(key=lambda c: (-c["count"], -c["room"].area_px))
+    chosen: list[dict] = []
+    for cl in clusters:
+        room = cl["room"]
+        # tiny AND ragged = wall pocket, not a room (real tiny rooms —
+        # AC platforms, shafts — are compact boxes)
+        compactness = 4.0 * np.pi * room.area_px / max(room.perimeter_px**2, 1.0)
+        if room.area_px < 0.01 * building_area and compactness < 0.25:
+            continue
+        overlap = sum(cl["poly"].intersection(c["poly"]).area for c in chosen)
+        if overlap > 0.25 * cl["poly"].area:
+            continue
+        chosen.append(cl)
+
+    # Decompose merges the vote couldn't settle: when a chosen void is
+    # explained by ≥2 significant unchosen sub-voids (each ≥80% inside it,
+    # jointly ≥70% of its area), the split IS the better reading — those
+    # pieces exist because some rung found real structure across the void.
+    unchosen = [cl for cl in clusters if cl not in chosen]
+    final: list[dict] = []
+    for cl in chosen:
+        if cl["poly"].area < 0.15 * building_area:
+            # only merge-scale voids qualify — a small room's "sub-voids"
+            # are texture accidents, not structure
+            final.append(cl)
+            continue
+        pieces = [
+            p
+            for p in unchosen
+            if p["count"] >= 2
+            and p["room"].area_px >= 0.01 * building_area
+            and p["poly"].intersection(cl["poly"]).area >= 0.8 * p["poly"].area
+        ]
+        placed: list[dict] = []
+        for p in sorted(pieces, key=lambda p: -p["room"].area_px):
+            if all(
+                p["poly"].intersection(q["poly"]).area <= 0.25 * p["poly"].area
+                for q in placed
+            ):
+                placed.append(p)
+        if len(placed) >= 2 and sum(
+            p["poly"].area for p in placed
+        ) >= 0.7 * cl["poly"].area:
+            final.extend(placed)
+        else:
+            final.append(cl)
+    chosen = final
+    rooms = sorted((c["room"] for c in chosen), key=lambda r: -r.area_px)
+    # honest reporting: when every chosen void already existed at the plain
+    # 5px close, no fallback material was needed and the pipeline's
+    # room_gap_fallback warning must stay silent
+    strategy = (
+        "close5"
+        if all(c["src"].startswith("close5") for c in chosen)
+        else "composite"
+    )
+    return RoomDetection(rooms=rooms, strategy=strategy)
 
 
 def _holes_to_rooms(
-    work: np.ndarray, walls: WallExtraction, min_area_px: float
+    work: np.ndarray,
+    walls: WallExtraction,
+    min_area_px: float,
+    hints: np.ndarray | None = None,
 ) -> list[CVRoom]:
     h, w = work.shape
     contours, hierarchy = cv2.findContours(work, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
@@ -217,6 +301,14 @@ def _holes_to_rooms(
 
         room = _polygonize(contour, walls.thickness_px)
         if room is not None:
+            # a door-scale pocket bounded largely by hint strokes is a swing
+            # sector carved off its room, not a room
+            if (
+                hints is not None
+                and room.area_px < 3500
+                and _boundary_fraction(room, hints) >= 0.25
+            ):
+                continue
             if walls.zones is not None:
                 room = replace(room, zone_bounded=_touches_zone(room, walls.zones))
             rooms.append(room)
@@ -225,9 +317,9 @@ def _holes_to_rooms(
     return rooms
 
 
-def _touches_zone(room: CVRoom, zones: np.ndarray) -> bool:
-    """True when a meaningful share of the boundary rides a dashed divider."""
-    near = cv2.dilate(zones, np.ones((7, 7), np.uint8))
+def _boundary_fraction(room: CVRoom, mask: np.ndarray) -> float:
+    """Share of the room's boundary that rides within 3px of ``mask``."""
+    near = cv2.dilate(mask, np.ones((7, 7), np.uint8))
     h, w = near.shape
     ring = np.vstack([room.polygon, room.polygon[:1]])
     hits = total = 0
@@ -239,7 +331,12 @@ def _touches_zone(room: CVRoom, zones: np.ndarray) -> bool:
             total += 1
             if 0 <= x < w and 0 <= y < h and near[y, x]:
                 hits += 1
-    return total > 0 and hits / total >= 0.12
+    return hits / total if total else 0.0
+
+
+def _touches_zone(room: CVRoom, zones: np.ndarray) -> bool:
+    """True when a meaningful share of the boundary rides a dashed divider."""
+    return _boundary_fraction(room, zones) >= 0.12
 
 
 def _polygonize(contour: np.ndarray, wall_thickness: float) -> CVRoom | None:
@@ -248,9 +345,12 @@ def _polygonize(contour: np.ndarray, wall_thickness: float) -> CVRoom | None:
         return None
 
     cleaned = _remove_spikes(_merge_collinear(approx), max_len=3.5 * wall_thickness)
-    squared = _square_corners(cleaned, max_cut=max(6.0, 2.9 * wall_thickness))
-    # squaring can leave a vertex exactly on the line of its neighbours
-    inner = Polygon(_merge_collinear(squared))
+    squared = _merge_collinear(  # squaring can leave collinear vertices
+        _square_corners(cleaned, max_cut=max(6.0, 2.9 * wall_thickness))
+    )
+    if len(squared) < 3:  # cleaning can degenerate a sliver contour entirely
+        return None
+    inner = Polygon(squared)
     if not inner.is_valid:
         inner = make_valid(inner)
         if isinstance(inner, MultiPolygon):

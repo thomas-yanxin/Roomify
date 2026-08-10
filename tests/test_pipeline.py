@@ -47,7 +47,7 @@ def test_parse_embeds_node_graph_when_scale_is_available(
     assert any(node["type"] == "wall" for node in plan.nodes.values())
 
 
-def test_unresolved_paths_use_final_object_ids(tmp_path):
+def test_unresolved_paths_use_final_object_ids(tmp_path, monkeypatch):
     img = blank()
     draw_wall_rect(img, 100, 100, 500, 400, thickness=10)
     cv2.line(img, (300, 100), (300, 400), (WALL_GREY,) * 3, 8)
@@ -56,9 +56,14 @@ def test_unresolved_paths_use_final_object_ids(tmp_path):
     draw_sill(img, 304, 200, 304, 245)
     path = tmp_path / "two-rooms.png"
     assert cv2.imwrite(str(path), img)
+    monkeypatch.setattr(
+        "roomify.pipeline.reconcile_rooms",
+        lambda rooms, *_args: (rooms[:1], []),
+    )
 
     plan = parse(path, use_vlm=False)
 
+    assert len(plan.rooms) == 1
     ids = {
         "rooms": {room.id for room in plan.rooms},
         "openings": {opening.id for opening in plan.openings},
