@@ -7,7 +7,7 @@
   "image_height_px": 670,
   "units": "mm",
   "coordinate_system": "x_right_y_down_origin_top_left",
-  "north_angle_deg": 14.65216178037906,
+  "north_angle_deg": 4.6521617803790605,
   "level_height_mm": 2800.0,
   "scale": {
     "px_per_mm_x": 0.05648296064882536,
@@ -3728,7 +3728,7 @@
       "protrusion_polygon_px": null,
       "protrusion_polygon_mm": null,
       "source": "cv+vlm",
-      "confidence": 0.9
+      "confidence": 0.95
     },
     {
       "id": "op_15",
@@ -3767,26 +3767,40 @@
       "element_type": "single_door",
       "raw_text": null,
       "bbox_px": {
-        "x0": 67.88914448417034,
-        "y0": 330.1913579846702,
-        "x1": 154.25649802221648,
-        "y1": 415.62930710538416
+        "x0": 332.02645186116774,
+        "y0": 295.8777935839908,
+        "x1": 414.1267229465543,
+        "y1": 379.3574188443068
+      },
+      "room_id": null,
+      "source": "vlm",
+      "confidence": 0.5
+    },
+    {
+      "id": "el_2",
+      "element_type": "single_door",
+      "raw_text": null,
+      "bbox_px": {
+        "x0": 76.40727798337215,
+        "y0": 299.96438361222937,
+        "x1": 150.89949215424124,
+        "y1": 366.8664617082192
       },
       "room_id": "room_1",
       "source": "vlm",
       "confidence": 0.5
     },
     {
-      "id": "el_2",
+      "id": "el_3",
       "element_type": "window",
       "raw_text": null,
       "bbox_px": {
-        "x0": 384.8781434539403,
-        "y0": 224.8048591712872,
-        "x1": 471.24549699198644,
-        "y1": 310.24280829200126
+        "x0": 384.0560655267468,
+        "y0": 215.918662425016,
+        "x1": 437.21286743431756,
+        "y1": 273.02912121901574
       },
-      "room_id": "room_2",
+      "room_id": null,
       "source": "vlm",
       "confidence": 0.5
     }
@@ -3819,18 +3833,23 @@
     },
     {
       "code": "opening_reclassified_by_arc",
-      "message": "candidate G was read as window but the plan draws a door-leaf swing sector at its jamb; reclassified single_door",
+      "message": "candidate G was read as casement_window but the plan draws a door-leaf swing sector at its jamb; reclassified single_door",
       "ref": "op_7"
     },
     {
       "code": "opening_reclassified_by_arc",
-      "message": "candidate H was read as window but the plan draws a door-leaf swing sector at its jamb; reclassified single_door",
+      "message": "candidate H was read as casement_window but the plan draws a door-leaf swing sector at its jamb; reclassified single_door",
       "ref": "op_8"
     },
     {
       "code": "opening_reclassified_by_arc",
-      "message": "candidate I was read as window but the plan draws a door-leaf swing sector at its jamb; reclassified single_door",
+      "message": "candidate I was read as casement_window but the plan draws a door-leaf swing sector at its jamb; reclassified single_door",
       "ref": "op_9"
+    },
+    {
+      "code": "opening_geometry_is_bbox",
+      "message": "a single_door was found only by the VLM; it is reported under elements with approximate bounding-box geometry",
+      "ref": null
     },
     {
       "code": "opening_geometry_is_bbox",
@@ -3884,7 +3903,7 @@
           "image_height_px": 670,
           "units": "mm",
           "coordinate_system": "x_right_y_down_origin_top_left",
-          "north_angle_deg": 14.65216178037906,
+          "north_angle_deg": 4.6521617803790605,
           "level_height_mm": 2800.0,
           "scale": {
             "px_per_mm_x": 0.05648296064882536,
@@ -7605,7 +7624,7 @@
               "protrusion_polygon_px": null,
               "protrusion_polygon_mm": null,
               "source": "cv+vlm",
-              "confidence": 0.9
+              "confidence": 0.95
             },
             {
               "id": "op_15",
@@ -7644,26 +7663,40 @@
               "element_type": "single_door",
               "raw_text": null,
               "bbox_px": {
-                "x0": 67.88914448417034,
-                "y0": 330.1913579846702,
-                "x1": 154.25649802221648,
-                "y1": 415.62930710538416
+                "x0": 332.02645186116774,
+                "y0": 295.8777935839908,
+                "x1": 414.1267229465543,
+                "y1": 379.3574188443068
+              },
+              "room_id": null,
+              "source": "vlm",
+              "confidence": 0.5
+            },
+            {
+              "id": "el_2",
+              "element_type": "single_door",
+              "raw_text": null,
+              "bbox_px": {
+                "x0": 76.40727798337215,
+                "y0": 299.96438361222937,
+                "x1": 150.89949215424124,
+                "y1": 366.8664617082192
               },
               "room_id": "room_1",
               "source": "vlm",
               "confidence": 0.5
             },
             {
-              "id": "el_2",
+              "id": "el_3",
               "element_type": "window",
               "raw_text": null,
               "bbox_px": {
-                "x0": 384.8781434539403,
-                "y0": 224.8048591712872,
-                "x1": 471.24549699198644,
-                "y1": 310.24280829200126
+                "x0": 384.0560655267468,
+                "y0": 215.918662425016,
+                "x1": 437.21286743431756,
+                "y1": 273.02912121901574
               },
-              "room_id": "room_2",
+              "room_id": null,
               "source": "vlm",
               "confidence": 0.5
             }
@@ -7696,18 +7729,23 @@
             },
             {
               "code": "opening_reclassified_by_arc",
-              "message": "candidate G was read as window but the plan draws a door-leaf swing sector at its jamb; reclassified single_door",
+              "message": "candidate G was read as casement_window but the plan draws a door-leaf swing sector at its jamb; reclassified single_door",
               "ref": "op_7"
             },
             {
               "code": "opening_reclassified_by_arc",
-              "message": "candidate H was read as window but the plan draws a door-leaf swing sector at its jamb; reclassified single_door",
+              "message": "candidate H was read as casement_window but the plan draws a door-leaf swing sector at its jamb; reclassified single_door",
               "ref": "op_8"
             },
             {
               "code": "opening_reclassified_by_arc",
-              "message": "candidate I was read as window but the plan draws a door-leaf swing sector at its jamb; reclassified single_door",
+              "message": "candidate I was read as casement_window but the plan draws a door-leaf swing sector at its jamb; reclassified single_door",
               "ref": "op_9"
+            },
+            {
+              "code": "opening_geometry_is_bbox",
+              "message": "a single_door was found only by the VLM; it is reported under elements with approximate bounding-box geometry",
+              "ref": null
             },
             {
               "code": "opening_geometry_is_bbox",

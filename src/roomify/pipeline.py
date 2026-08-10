@@ -310,7 +310,7 @@ def parse(
         executor.shutdown(wait=False)
 
     opening_drafts, element_drafts, op_warnings, op_unresolved = merge_openings(
-        candidates, openings_read, work_bgr.shape[:2], rooms, scale_draft
+        candidates, openings_read, work_bgr.shape[:2], rooms, scale_draft, segments
     )
     warnings += op_warnings
     unresolved += op_unresolved

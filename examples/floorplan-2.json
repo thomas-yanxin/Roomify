@@ -2846,55 +2846,27 @@
   "elements": [
     {
       "id": "el_1",
-      "element_type": "single_door",
+      "element_type": "window",
       "raw_text": null,
       "bbox_px": {
-        "x0": 528.448,
-        "y0": 218.68,
-        "x1": 587.328,
-        "y1": 275.48
+        "x0": 108.928,
+        "y0": 588.3,
+        "x1": 454.848,
+        "y1": 616.7
       },
-      "room_id": "room_5",
+      "room_id": null,
       "source": "vlm",
       "confidence": 0.5
     },
     {
       "id": "el_2",
-      "element_type": "window",
-      "raw_text": null,
-      "bbox_px": {
-        "x0": 307.64799999999997,
-        "y0": 275.48,
-        "x1": 381.248,
-        "y1": 303.88
-      },
-      "room_id": "room_1",
-      "source": "vlm",
-      "confidence": 0.5
-    },
-    {
-      "id": "el_3",
-      "element_type": "window",
-      "raw_text": null,
-      "bbox_px": {
-        "x0": 484.288,
-        "y0": 509.78,
-        "x1": 616.768,
-        "y1": 538.18
-      },
-      "room_id": "room_3",
-      "source": "vlm",
-      "confidence": 0.5
-    },
-    {
-      "id": "el_4",
       "element_type": "railing",
       "raw_text": null,
       "bbox_px": {
-        "x0": 108.928,
-        "y0": 594.98,
-        "x1": 616.768,
-        "y1": 623.38
+        "x0": 123.64800000000001,
+        "y0": 616.28,
+        "x1": 491.648,
+        "y1": 644.6800000000001
       },
       "room_id": null,
       "source": "vlm",
@@ -2918,13 +2890,13 @@
       "ref": "op_18"
     },
     {
-      "code": "opening_geometry_is_bbox",
-      "message": "a single_door was found only by the VLM; it is reported under elements with approximate bounding-box geometry",
+      "code": "opening_without_a_wall",
+      "message": "a single_door was reported where no wall runs; an opening is a hole in a wall, so it is not emitted",
       "ref": null
     },
     {
-      "code": "opening_geometry_is_bbox",
-      "message": "a window was found only by the VLM; it is reported under elements with approximate bounding-box geometry",
+      "code": "opening_without_a_wall",
+      "message": "a window was reported where no wall runs; an opening is a hole in a wall, so it is not emitted",
       "ref": null
     },
     {
@@ -5818,55 +5790,27 @@
           "elements": [
             {
               "id": "el_1",
-              "element_type": "single_door",
+              "element_type": "window",
               "raw_text": null,
               "bbox_px": {
-                "x0": 528.448,
-                "y0": 218.68,
-                "x1": 587.328,
-                "y1": 275.48
+                "x0": 108.928,
+                "y0": 588.3,
+                "x1": 454.848,
+                "y1": 616.7
               },
-              "room_id": "room_5",
+              "room_id": null,
               "source": "vlm",
               "confidence": 0.5
             },
             {
               "id": "el_2",
-              "element_type": "window",
-              "raw_text": null,
-              "bbox_px": {
-                "x0": 307.64799999999997,
-                "y0": 275.48,
-                "x1": 381.248,
-                "y1": 303.88
-              },
-              "room_id": "room_1",
-              "source": "vlm",
-              "confidence": 0.5
-            },
-            {
-              "id": "el_3",
-              "element_type": "window",
-              "raw_text": null,
-              "bbox_px": {
-                "x0": 484.288,
-                "y0": 509.78,
-                "x1": 616.768,
-                "y1": 538.18
-              },
-              "room_id": "room_3",
-              "source": "vlm",
-              "confidence": 0.5
-            },
-            {
-              "id": "el_4",
               "element_type": "railing",
               "raw_text": null,
               "bbox_px": {
-                "x0": 108.928,
-                "y0": 594.98,
-                "x1": 616.768,
-                "y1": 623.38
+                "x0": 123.64800000000001,
+                "y0": 616.28,
+                "x1": 491.648,
+                "y1": 644.6800000000001
               },
               "room_id": null,
               "source": "vlm",
@@ -5890,13 +5834,13 @@
               "ref": "op_18"
             },
             {
-              "code": "opening_geometry_is_bbox",
-              "message": "a single_door was found only by the VLM; it is reported under elements with approximate bounding-box geometry",
+              "code": "opening_without_a_wall",
+              "message": "a single_door was reported where no wall runs; an opening is a hole in a wall, so it is not emitted",
               "ref": null
             },
             {
-              "code": "opening_geometry_is_bbox",
-              "message": "a window was found only by the VLM; it is reported under elements with approximate bounding-box geometry",
+              "code": "opening_without_a_wall",
+              "message": "a window was reported where no wall runs; an opening is a hole in a wall, so it is not emitted",
               "ref": null
             },
             {

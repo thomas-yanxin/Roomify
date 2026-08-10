@@ -1171,7 +1171,7 @@
     },
     {
       "id": "op_8",
-      "element_type": "casement_window",
+      "element_type": "window",
       "raw_text": null,
       "bbox_px": {
         "x0": 335.0,
@@ -1197,11 +1197,11 @@
       "protrusion_polygon_px": null,
       "protrusion_polygon_mm": null,
       "source": "cv+vlm",
-      "confidence": 0.85
+      "confidence": 0.9
     },
     {
       "id": "op_9",
-      "element_type": "sliding_window",
+      "element_type": "window",
       "raw_text": null,
       "bbox_px": {
         "x0": 391.0,
@@ -1230,22 +1230,7 @@
       "confidence": 0.9
     }
   ],
-  "elements": [
-    {
-      "id": "el_1",
-      "element_type": "window",
-      "raw_text": null,
-      "bbox_px": {
-        "x0": 357.68399999999997,
-        "y0": 111.108,
-        "x1": 386.764,
-        "y1": 128.838
-      },
-      "room_id": null,
-      "source": "vlm",
-      "confidence": 0.5
-    }
-  ],
+  "elements": [],
   "warnings": [
     {
       "code": "room_gap_fallback",
@@ -1258,8 +1243,8 @@
       "ref": "vlm_1"
     },
     {
-      "code": "opening_geometry_is_bbox",
-      "message": "a window was found only by the VLM; it is reported under elements with approximate bounding-box geometry",
+      "code": "opening_without_a_wall",
+      "message": "a sliding_window was reported where no wall runs; an opening is a hole in a wall, so it is not emitted",
       "ref": null
     },
     {
@@ -2464,7 +2449,7 @@
             },
             {
               "id": "op_8",
-              "element_type": "casement_window",
+              "element_type": "window",
               "raw_text": null,
               "bbox_px": {
                 "x0": 335.0,
@@ -2490,11 +2475,11 @@
               "protrusion_polygon_px": null,
               "protrusion_polygon_mm": null,
               "source": "cv+vlm",
-              "confidence": 0.85
+              "confidence": 0.9
             },
             {
               "id": "op_9",
-              "element_type": "sliding_window",
+              "element_type": "window",
               "raw_text": null,
               "bbox_px": {
                 "x0": 391.0,
@@ -2523,22 +2508,7 @@
               "confidence": 0.9
             }
           ],
-          "elements": [
-            {
-              "id": "el_1",
-              "element_type": "window",
-              "raw_text": null,
-              "bbox_px": {
-                "x0": 357.68399999999997,
-                "y0": 111.108,
-                "x1": 386.764,
-                "y1": 128.838
-              },
-              "room_id": null,
-              "source": "vlm",
-              "confidence": 0.5
-            }
-          ],
+          "elements": [],
           "warnings": [
             {
               "code": "room_gap_fallback",
@@ -2551,8 +2521,8 @@
               "ref": "vlm_1"
             },
             {
-              "code": "opening_geometry_is_bbox",
-              "message": "a window was found only by the VLM; it is reported under elements with approximate bounding-box geometry",
+              "code": "opening_without_a_wall",
+              "message": "a sliding_window was reported where no wall runs; an opening is a hole in a wall, so it is not emitted",
               "ref": null
             },
             {
@@ -3376,7 +3346,7 @@
       "metadata": {
         "roomifyId": "op_8"
       },
-      "windowType": "casement",
+      "windowType": "fixed",
       "sill": true,
       "position": [
         1.9457941176470586,
@@ -3401,7 +3371,7 @@
       "metadata": {
         "roomifyId": "op_9"
       },
-      "windowType": "sliding",
+      "windowType": "fixed",
       "sill": true,
       "position": [
         1.3684705882352939,

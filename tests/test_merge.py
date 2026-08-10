@@ -659,3 +659,44 @@ def test_door_wider_than_a_leaf_can_be_is_not_asserted_as_a_door():
     drafts, _, warnings, _ = parse("sliding_door", width_px=140.0)  # 2800mm
     assert drafts[0].element_type == "sliding_door"
     assert warnings == []
+
+
+def test_vlm_only_opening_is_snapped_to_its_wall_or_dropped():
+    """A door or window is a hole in a wall; it cannot float in a room.
+
+    VLM box_2d coordinates drift: on the corpus 18 of 49 opening-shaped
+    extras sat beside a wall and 9 had none within three thicknesses, up to
+    1.4m adrift. Near ones are moved onto the wall they belong in; ones with
+    no wall to be in have no geometry worth reporting.
+    """
+    from roomify.merge import merge_openings
+    from roomify.openings import WallSegment
+    from roomify.vlm import OpeningsRead
+
+    wall = WallSegment((100.0, 500.0), (900.0, 500.0), 10.0, (0, "exterior"))
+
+    def extras(*boxes):
+        return OpeningsRead.model_validate({
+            "candidates": [],
+            "extra_elements": [
+                {"box_2d": list(b), "element_type": t, "raw_text": None,
+                 "confidence": 0.8, "is_real": True}
+                for b, t in boxes
+            ],
+        })
+
+    # box_2d is [ymin, xmin, ymax, xmax] scaled 0-1000 over a 1000x1000 image
+    near = ([515, 300, 535, 400], "window")      # 15px below the wall
+    far = ([800, 300, 820, 400], "window")       # 300px away: nothing there
+    free = ([800, 600, 830, 640], "column")      # free-standing, no wall needed
+
+    _, elements, warnings, _ = merge_openings(
+        [], extras(near, far, free), (1000, 1000), None, None, [wall])
+
+    kinds = [e.element_type for e in elements]
+    assert kinds == ["window", "column"], kinds
+    window = elements[0]
+    assert (window.bbox[1] + window.bbox[3]) / 2 == pytest.approx(500.0, abs=0.5)
+    assert window.bbox[2] - window.bbox[0] == pytest.approx(100.0)  # size kept
+    assert elements[1].bbox[1] == 800.0  # the column is left exactly where it was
+    assert "opening_without_a_wall" in [w.code for w in warnings]

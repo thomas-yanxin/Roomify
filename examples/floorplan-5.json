@@ -388,9 +388,9 @@
         217.69391873223057,
         26.417927094622648
       ],
-      "printed_area_sqm": 23.65,
-      "area_deviation": -0.47748159396541645,
-      "area_deviation_flag": true,
+      "printed_area_sqm": 13.69,
+      "area_deviation": -0.09732941543331626,
+      "area_deviation_flag": false,
       "source": "cv+vlm",
       "confidence": 0.95
     },
@@ -775,12 +775,12 @@
     {
       "id": "wall_5",
       "start_px": {
-        "x": 313.9520202020202,
+        "x": 316.0,
         "y": 349.75
       },
       "end_px": {
-        "x": 313.9520202020202,
-        "y": 462.25
+        "x": 316.0,
+        "y": 402.0
       },
       "thickness_px": 14.0,
       "rooms": [
@@ -788,12 +788,12 @@
         "room_3"
       ],
       "start_mm": {
-        "x": 3885.0308809746957,
+        "x": 3925.4288659793815,
         "y": 4652.379545454545
       },
       "end_mm": {
-        "x": 3885.0308809746957,
-        "y": 6629.311363636363
+        "x": 3925.4288659793815,
+        "y": 5570.554545454545
       },
       "thickness_mm": 276.16082474226806,
       "source": "cv",
@@ -806,7 +806,7 @@
         "y": 462.25
       },
       "end_px": {
-        "x": 313.9520202020202,
+        "x": 316.25,
         "y": 462.25
       },
       "thickness_px": 14.0,
@@ -819,7 +819,7 @@
         "y": 6629.311363636363
       },
       "end_mm": {
-        "x": 3885.0308809746957,
+        "x": 3930.3603092783505,
         "y": 6629.311363636363
       },
       "thickness_mm": 246.0181818181818,
@@ -833,7 +833,7 @@
         "y": 349.75
       },
       "end_px": {
-        "x": 313.9520202020202,
+        "x": 316.0,
         "y": 349.75
       },
       "thickness_px": 14.0,
@@ -846,7 +846,7 @@
         "y": 4652.379545454545
       },
       "end_mm": {
-        "x": 3885.0308809746957,
+        "x": 3925.4288659793815,
         "y": 4652.379545454545
       },
       "thickness_mm": 246.0181818181818,
@@ -856,7 +856,34 @@
     {
       "id": "wall_8",
       "start_px": {
-        "x": 313.9520202020202,
+        "x": 316.25,
+        "y": 434.0
+      },
+      "end_px": {
+        "x": 316.25,
+        "y": 462.25
+      },
+      "thickness_px": 14.0,
+      "rooms": [
+        "room_2",
+        "room_3"
+      ],
+      "start_mm": {
+        "x": 3930.3603092783505,
+        "y": 6132.881818181818
+      },
+      "end_mm": {
+        "x": 3930.3603092783505,
+        "y": 6629.311363636363
+      },
+      "thickness_mm": 276.16082474226806,
+      "source": "cv",
+      "confidence": 0.6
+    },
+    {
+      "id": "wall_9",
+      "start_px": {
+        "x": 316.25,
         "y": 457.375
       },
       "end_px": {
@@ -869,7 +896,7 @@
         "room_2"
       ],
       "start_mm": {
-        "x": 3885.0308809746957,
+        "x": 3930.3603092783505,
         "y": 6543.644318181818
       },
       "end_mm": {
@@ -881,7 +908,7 @@
       "confidence": 0.6
     },
     {
-      "id": "wall_9",
+      "id": "wall_10",
       "start_px": {
         "x": 391.5,
         "y": 457.375
@@ -908,7 +935,7 @@
       "confidence": 0.6
     },
     {
-      "id": "wall_10",
+      "id": "wall_11",
       "start_px": {
         "x": 122.0,
         "y": 642.5
@@ -935,7 +962,7 @@
       "confidence": 0.6
     },
     {
-      "id": "wall_11",
+      "id": "wall_12",
       "start_px": {
         "x": 122.0,
         "y": 596.0
@@ -962,7 +989,7 @@
       "confidence": 0.6
     },
     {
-      "id": "wall_12",
+      "id": "wall_13",
       "start_px": {
         "x": 110.5,
         "y": 462.0
@@ -989,7 +1016,7 @@
       "confidence": 0.6
     },
     {
-      "id": "wall_13",
+      "id": "wall_14",
       "start_px": {
         "x": 207.5,
         "y": 255.39922480620154
@@ -1016,7 +1043,7 @@
       "confidence": 0.6
     },
     {
-      "id": "wall_14",
+      "id": "wall_15",
       "start_px": {
         "x": 378.0,
         "y": 462.0
@@ -1043,7 +1070,7 @@
       "confidence": 0.6
     },
     {
-      "id": "wall_15",
+      "id": "wall_16",
       "start_px": {
         "x": 477.0,
         "y": 335.0
@@ -1070,7 +1097,7 @@
       "confidence": 0.6
     },
     {
-      "id": "wall_16",
+      "id": "wall_17",
       "start_px": {
         "x": 122.0,
         "y": 349.5
@@ -1097,7 +1124,7 @@
       "confidence": 0.6
     },
     {
-      "id": "wall_17",
+      "id": "wall_18",
       "start_px": {
         "x": 122.5,
         "y": 349.5
@@ -1124,7 +1151,7 @@
       "confidence": 0.6
     },
     {
-      "id": "wall_18",
+      "id": "wall_19",
       "start_px": {
         "x": 511.0,
         "y": 91.5
@@ -1151,7 +1178,7 @@
       "confidence": 0.6
     },
     {
-      "id": "wall_19",
+      "id": "wall_20",
       "start_px": {
         "x": 610.5,
         "y": 91.5
@@ -1178,7 +1205,7 @@
       "confidence": 0.6
     },
     {
-      "id": "wall_20",
+      "id": "wall_21",
       "start_px": {
         "x": 511.0,
         "y": 91.0
@@ -1205,7 +1232,7 @@
       "confidence": 0.6
     },
     {
-      "id": "wall_21",
+      "id": "wall_22",
       "start_px": {
         "x": 464.0,
         "y": 255.5
@@ -1232,7 +1259,7 @@
       "confidence": 0.6
     },
     {
-      "id": "wall_22",
+      "id": "wall_23",
       "start_px": {
         "x": 610.5,
         "y": 255.0
@@ -1259,7 +1286,7 @@
       "confidence": 0.6
     },
     {
-      "id": "wall_23",
+      "id": "wall_24",
       "start_px": {
         "x": 465.0,
         "y": 348.5
@@ -1286,7 +1313,7 @@
       "confidence": 0.6
     },
     {
-      "id": "wall_24",
+      "id": "wall_25",
       "start_px": {
         "x": 207.5,
         "y": 255.39922480620154
@@ -1332,7 +1359,7 @@
       "width_mm": 2130.3835051546394,
       "sill_height_mm": 900.0,
       "height_mm": 1500.0,
-      "wall_id": "wall_13",
+      "wall_id": "wall_14",
       "connects": [
         "room_2",
         "exterior"
@@ -1435,7 +1462,7 @@
       "protrusion_polygon_px": null,
       "protrusion_polygon_mm": null,
       "source": "cv+vlm",
-      "confidence": 0.95
+      "confidence": 0.9
     },
     {
       "id": "op_5",
@@ -1455,7 +1482,7 @@
       "width_mm": 808.3454545454546,
       "sill_height_mm": 0.0,
       "height_mm": 2100.0,
-      "wall_id": "wall_22",
+      "wall_id": "wall_23",
       "connects": [
         "room_5",
         "exterior"
@@ -1472,36 +1499,6 @@
     },
     {
       "id": "op_6",
-      "element_type": "single_door",
-      "raw_text": null,
-      "bbox_px": {
-        "x0": 307.0,
-        "y0": 397.0,
-        "x1": 321.0,
-        "y1": 442.0
-      },
-      "center_px": {
-        "x": 314.0,
-        "y": 419.5
-      },
-      "width_px": 46.0,
-      "width_mm": 808.3454545454546,
-      "sill_height_mm": 0.0,
-      "height_mm": 2100.0,
-      "wall_id": "wall_5",
-      "connects": [
-        "room_2",
-        "room_3"
-      ],
-      "swing": null,
-      "hinge_px": null,
-      "protrusion_polygon_px": null,
-      "protrusion_polygon_mm": null,
-      "source": "cv+vlm",
-      "confidence": 0.95
-    },
-    {
-      "id": "op_7",
       "element_type": "window",
       "raw_text": null,
       "bbox_px": {
@@ -1518,7 +1515,7 @@
       "width_mm": 808.3454545454546,
       "sill_height_mm": 900.0,
       "height_mm": 1500.0,
-      "wall_id": "wall_17",
+      "wall_id": "wall_18",
       "connects": [
         "room_3",
         "exterior"
@@ -1528,10 +1525,10 @@
       "protrusion_polygon_px": null,
       "protrusion_polygon_mm": null,
       "source": "cv+vlm",
-      "confidence": 0.9
+      "confidence": 0.95
     },
     {
-      "id": "op_8",
+      "id": "op_7",
       "element_type": "single_door",
       "raw_text": null,
       "bbox_px": {
@@ -1548,7 +1545,7 @@
       "width_mm": 828.4824742268041,
       "sill_height_mm": 0.0,
       "height_mm": 2100.0,
-      "wall_id": "wall_8",
+      "wall_id": "wall_9",
       "connects": [
         "room_1",
         "room_2"
@@ -1564,7 +1561,7 @@
       "confidence": 0.95
     },
     {
-      "id": "op_9",
+      "id": "op_8",
       "element_type": "window",
       "raw_text": null,
       "bbox_px": {
@@ -1581,7 +1578,7 @@
       "width_mm": 2337.172727272727,
       "sill_height_mm": 900.0,
       "height_mm": 1500.0,
-      "wall_id": "wall_12",
+      "wall_id": "wall_13",
       "connects": [
         "room_1",
         "exterior"
@@ -1591,21 +1588,49 @@
       "protrusion_polygon_px": null,
       "protrusion_polygon_mm": null,
       "source": "cv+vlm",
-      "confidence": 0.9
+      "confidence": 0.95
     }
   ],
   "elements": [
     {
       "id": "el_1",
+      "element_type": "single_door",
+      "raw_text": null,
+      "bbox_px": {
+        "x0": 284.016,
+        "y0": 319.65999999999997,
+        "x1": 305.976,
+        "y1": 379.84
+      },
+      "room_id": null,
+      "source": "vlm",
+      "confidence": 0.5
+    },
+    {
+      "id": "el_2",
+      "element_type": "single_door",
+      "raw_text": null,
+      "bbox_px": {
+        "x0": 305.27000000000004,
+        "y0": 403.91,
+        "x1": 327.23,
+        "y1": 464.09000000000003
+      },
+      "room_id": null,
+      "source": "vlm",
+      "confidence": 0.5
+    },
+    {
+      "id": "el_3",
       "element_type": "sliding_window",
       "raw_text": null,
       "bbox_px": {
-        "x0": 125.904,
-        "y0": 494.18399999999997,
-        "x1": 152.256,
-        "y1": 550.8240000000001
+        "x0": 99.52000000000001,
+        "y0": 451.704,
+        "x1": 121.48000000000002,
+        "y1": 540.2040000000001
       },
-      "room_id": "room_1",
+      "room_id": null,
       "source": "vlm",
       "confidence": 0.5
     }
@@ -1633,8 +1658,18 @@
     },
     {
       "code": "opening_reclassified_by_arc",
-      "message": "candidate B was read as sliding_window but the plan draws a door-leaf swing sector at its jamb; reclassified single_door",
+      "message": "candidate B was read as window but the plan draws a door-leaf swing sector at its jamb; reclassified single_door",
       "ref": "op_2"
+    },
+    {
+      "code": "opening_geometry_is_bbox",
+      "message": "a single_door was found only by the VLM; it is reported under elements with approximate bounding-box geometry",
+      "ref": null
+    },
+    {
+      "code": "opening_geometry_is_bbox",
+      "message": "a single_door was found only by the VLM; it is reported under elements with approximate bounding-box geometry",
+      "ref": null
     },
     {
       "code": "opening_geometry_is_bbox",
@@ -1657,12 +1692,7 @@
       "ref": "room_5"
     }
   ],
-  "unresolved": [
-    {
-      "path": "openings/op_6/swing",
-      "reason": "no swing-arc evidence in the image"
-    }
-  ],
+  "unresolved": [],
   "nodes": {
     "site_roomify": {
       "object": "node",
@@ -2061,9 +2091,9 @@
                 217.69391873223057,
                 26.417927094622648
               ],
-              "printed_area_sqm": 23.65,
-              "area_deviation": -0.47748159396541645,
-              "area_deviation_flag": true,
+              "printed_area_sqm": 13.69,
+              "area_deviation": -0.09732941543331626,
+              "area_deviation_flag": false,
               "source": "cv+vlm",
               "confidence": 0.95
             },
@@ -2448,12 +2478,12 @@
             {
               "id": "wall_5",
               "start_px": {
-                "x": 313.9520202020202,
+                "x": 316.0,
                 "y": 349.75
               },
               "end_px": {
-                "x": 313.9520202020202,
-                "y": 462.25
+                "x": 316.0,
+                "y": 402.0
               },
               "thickness_px": 14.0,
               "rooms": [
@@ -2461,12 +2491,12 @@
                 "room_3"
               ],
               "start_mm": {
-                "x": 3885.0308809746957,
+                "x": 3925.4288659793815,
                 "y": 4652.379545454545
               },
               "end_mm": {
-                "x": 3885.0308809746957,
-                "y": 6629.311363636363
+                "x": 3925.4288659793815,
+                "y": 5570.554545454545
               },
               "thickness_mm": 276.16082474226806,
               "source": "cv",
@@ -2479,7 +2509,7 @@
                 "y": 462.25
               },
               "end_px": {
-                "x": 313.9520202020202,
+                "x": 316.25,
                 "y": 462.25
               },
               "thickness_px": 14.0,
@@ -2492,7 +2522,7 @@
                 "y": 6629.311363636363
               },
               "end_mm": {
-                "x": 3885.0308809746957,
+                "x": 3930.3603092783505,
                 "y": 6629.311363636363
               },
               "thickness_mm": 246.0181818181818,
@@ -2506,7 +2536,7 @@
                 "y": 349.75
               },
               "end_px": {
-                "x": 313.9520202020202,
+                "x": 316.0,
                 "y": 349.75
               },
               "thickness_px": 14.0,
@@ -2519,7 +2549,7 @@
                 "y": 4652.379545454545
               },
               "end_mm": {
-                "x": 3885.0308809746957,
+                "x": 3925.4288659793815,
                 "y": 4652.379545454545
               },
               "thickness_mm": 246.0181818181818,
@@ -2529,7 +2559,34 @@
             {
               "id": "wall_8",
               "start_px": {
-                "x": 313.9520202020202,
+                "x": 316.25,
+                "y": 434.0
+              },
+              "end_px": {
+                "x": 316.25,
+                "y": 462.25
+              },
+              "thickness_px": 14.0,
+              "rooms": [
+                "room_2",
+                "room_3"
+              ],
+              "start_mm": {
+                "x": 3930.3603092783505,
+                "y": 6132.881818181818
+              },
+              "end_mm": {
+                "x": 3930.3603092783505,
+                "y": 6629.311363636363
+              },
+              "thickness_mm": 276.16082474226806,
+              "source": "cv",
+              "confidence": 0.6
+            },
+            {
+              "id": "wall_9",
+              "start_px": {
+                "x": 316.25,
                 "y": 457.375
               },
               "end_px": {
@@ -2542,7 +2599,7 @@
                 "room_2"
               ],
               "start_mm": {
-                "x": 3885.0308809746957,
+                "x": 3930.3603092783505,
                 "y": 6543.644318181818
               },
               "end_mm": {
@@ -2554,7 +2611,7 @@
               "confidence": 0.6
             },
             {
-              "id": "wall_9",
+              "id": "wall_10",
               "start_px": {
                 "x": 391.5,
                 "y": 457.375
@@ -2581,7 +2638,7 @@
               "confidence": 0.6
             },
             {
-              "id": "wall_10",
+              "id": "wall_11",
               "start_px": {
                 "x": 122.0,
                 "y": 642.5
@@ -2608,7 +2665,7 @@
               "confidence": 0.6
             },
             {
-              "id": "wall_11",
+              "id": "wall_12",
               "start_px": {
                 "x": 122.0,
                 "y": 596.0
@@ -2635,7 +2692,7 @@
               "confidence": 0.6
             },
             {
-              "id": "wall_12",
+              "id": "wall_13",
               "start_px": {
                 "x": 110.5,
                 "y": 462.0
@@ -2662,7 +2719,7 @@
               "confidence": 0.6
             },
             {
-              "id": "wall_13",
+              "id": "wall_14",
               "start_px": {
                 "x": 207.5,
                 "y": 255.39922480620154
@@ -2689,7 +2746,7 @@
               "confidence": 0.6
             },
             {
-              "id": "wall_14",
+              "id": "wall_15",
               "start_px": {
                 "x": 378.0,
                 "y": 462.0
@@ -2716,7 +2773,7 @@
               "confidence": 0.6
             },
             {
-              "id": "wall_15",
+              "id": "wall_16",
               "start_px": {
                 "x": 477.0,
                 "y": 335.0
@@ -2743,7 +2800,7 @@
               "confidence": 0.6
             },
             {
-              "id": "wall_16",
+              "id": "wall_17",
               "start_px": {
                 "x": 122.0,
                 "y": 349.5
@@ -2770,7 +2827,7 @@
               "confidence": 0.6
             },
             {
-              "id": "wall_17",
+              "id": "wall_18",
               "start_px": {
                 "x": 122.5,
                 "y": 349.5
@@ -2797,7 +2854,7 @@
               "confidence": 0.6
             },
             {
-              "id": "wall_18",
+              "id": "wall_19",
               "start_px": {
                 "x": 511.0,
                 "y": 91.5
@@ -2824,7 +2881,7 @@
               "confidence": 0.6
             },
             {
-              "id": "wall_19",
+              "id": "wall_20",
               "start_px": {
                 "x": 610.5,
                 "y": 91.5
@@ -2851,7 +2908,7 @@
               "confidence": 0.6
             },
             {
-              "id": "wall_20",
+              "id": "wall_21",
               "start_px": {
                 "x": 511.0,
                 "y": 91.0
@@ -2878,7 +2935,7 @@
               "confidence": 0.6
             },
             {
-              "id": "wall_21",
+              "id": "wall_22",
               "start_px": {
                 "x": 464.0,
                 "y": 255.5
@@ -2905,7 +2962,7 @@
               "confidence": 0.6
             },
             {
-              "id": "wall_22",
+              "id": "wall_23",
               "start_px": {
                 "x": 610.5,
                 "y": 255.0
@@ -2932,7 +2989,7 @@
               "confidence": 0.6
             },
             {
-              "id": "wall_23",
+              "id": "wall_24",
               "start_px": {
                 "x": 465.0,
                 "y": 348.5
@@ -2959,7 +3016,7 @@
               "confidence": 0.6
             },
             {
-              "id": "wall_24",
+              "id": "wall_25",
               "start_px": {
                 "x": 207.5,
                 "y": 255.39922480620154
@@ -3005,7 +3062,7 @@
               "width_mm": 2130.3835051546394,
               "sill_height_mm": 900.0,
               "height_mm": 1500.0,
-              "wall_id": "wall_13",
+              "wall_id": "wall_14",
               "connects": [
                 "room_2",
                 "exterior"
@@ -3108,7 +3165,7 @@
               "protrusion_polygon_px": null,
               "protrusion_polygon_mm": null,
               "source": "cv+vlm",
-              "confidence": 0.95
+              "confidence": 0.9
             },
             {
               "id": "op_5",
@@ -3128,7 +3185,7 @@
               "width_mm": 808.3454545454546,
               "sill_height_mm": 0.0,
               "height_mm": 2100.0,
-              "wall_id": "wall_22",
+              "wall_id": "wall_23",
               "connects": [
                 "room_5",
                 "exterior"
@@ -3145,36 +3202,6 @@
             },
             {
               "id": "op_6",
-              "element_type": "single_door",
-              "raw_text": null,
-              "bbox_px": {
-                "x0": 307.0,
-                "y0": 397.0,
-                "x1": 321.0,
-                "y1": 442.0
-              },
-              "center_px": {
-                "x": 314.0,
-                "y": 419.5
-              },
-              "width_px": 46.0,
-              "width_mm": 808.3454545454546,
-              "sill_height_mm": 0.0,
-              "height_mm": 2100.0,
-              "wall_id": "wall_5",
-              "connects": [
-                "room_2",
-                "room_3"
-              ],
-              "swing": null,
-              "hinge_px": null,
-              "protrusion_polygon_px": null,
-              "protrusion_polygon_mm": null,
-              "source": "cv+vlm",
-              "confidence": 0.95
-            },
-            {
-              "id": "op_7",
               "element_type": "window",
               "raw_text": null,
               "bbox_px": {
@@ -3191,7 +3218,7 @@
               "width_mm": 808.3454545454546,
               "sill_height_mm": 900.0,
               "height_mm": 1500.0,
-              "wall_id": "wall_17",
+              "wall_id": "wall_18",
               "connects": [
                 "room_3",
                 "exterior"
@@ -3201,10 +3228,10 @@
               "protrusion_polygon_px": null,
               "protrusion_polygon_mm": null,
               "source": "cv+vlm",
-              "confidence": 0.9
+              "confidence": 0.95
             },
             {
-              "id": "op_8",
+              "id": "op_7",
               "element_type": "single_door",
               "raw_text": null,
               "bbox_px": {
@@ -3221,7 +3248,7 @@
               "width_mm": 828.4824742268041,
               "sill_height_mm": 0.0,
               "height_mm": 2100.0,
-              "wall_id": "wall_8",
+              "wall_id": "wall_9",
               "connects": [
                 "room_1",
                 "room_2"
@@ -3237,7 +3264,7 @@
               "confidence": 0.95
             },
             {
-              "id": "op_9",
+              "id": "op_8",
               "element_type": "window",
               "raw_text": null,
               "bbox_px": {
@@ -3254,7 +3281,7 @@
               "width_mm": 2337.172727272727,
               "sill_height_mm": 900.0,
               "height_mm": 1500.0,
-              "wall_id": "wall_12",
+              "wall_id": "wall_13",
               "connects": [
                 "room_1",
                 "exterior"
@@ -3264,21 +3291,49 @@
               "protrusion_polygon_px": null,
               "protrusion_polygon_mm": null,
               "source": "cv+vlm",
-              "confidence": 0.9
+              "confidence": 0.95
             }
           ],
           "elements": [
             {
               "id": "el_1",
+              "element_type": "single_door",
+              "raw_text": null,
+              "bbox_px": {
+                "x0": 284.016,
+                "y0": 319.65999999999997,
+                "x1": 305.976,
+                "y1": 379.84
+              },
+              "room_id": null,
+              "source": "vlm",
+              "confidence": 0.5
+            },
+            {
+              "id": "el_2",
+              "element_type": "single_door",
+              "raw_text": null,
+              "bbox_px": {
+                "x0": 305.27000000000004,
+                "y0": 403.91,
+                "x1": 327.23,
+                "y1": 464.09000000000003
+              },
+              "room_id": null,
+              "source": "vlm",
+              "confidence": 0.5
+            },
+            {
+              "id": "el_3",
               "element_type": "sliding_window",
               "raw_text": null,
               "bbox_px": {
-                "x0": 125.904,
-                "y0": 494.18399999999997,
-                "x1": 152.256,
-                "y1": 550.8240000000001
+                "x0": 99.52000000000001,
+                "y0": 451.704,
+                "x1": 121.48000000000002,
+                "y1": 540.2040000000001
               },
-              "room_id": "room_1",
+              "room_id": null,
               "source": "vlm",
               "confidence": 0.5
             }
@@ -3306,8 +3361,18 @@
             },
             {
               "code": "opening_reclassified_by_arc",
-              "message": "candidate B was read as sliding_window but the plan draws a door-leaf swing sector at its jamb; reclassified single_door",
+              "message": "candidate B was read as window but the plan draws a door-leaf swing sector at its jamb; reclassified single_door",
               "ref": "op_2"
+            },
+            {
+              "code": "opening_geometry_is_bbox",
+              "message": "a single_door was found only by the VLM; it is reported under elements with approximate bounding-box geometry",
+              "ref": null
+            },
+            {
+              "code": "opening_geometry_is_bbox",
+              "message": "a single_door was found only by the VLM; it is reported under elements with approximate bounding-box geometry",
+              "ref": null
             },
             {
               "code": "opening_geometry_is_bbox",
@@ -3330,12 +3395,7 @@
               "ref": "room_5"
             }
           ],
-          "unresolved": [
-            {
-              "path": "openings/op_6/swing",
-              "reason": "no swing-arc evidence in the image"
-            }
-          ]
+          "unresolved": []
         }
       },
       "name": "floorplan-5",
@@ -3419,6 +3479,7 @@
         "wall_22",
         "wall_23",
         "wall_24",
+        "wall_25",
         "zone_room_1",
         "zone_room_2",
         "zone_room_3",
@@ -3563,16 +3624,14 @@
           "room_3"
         ]
       },
-      "children": [
-        "door_op_6"
-      ],
+      "children": [],
       "start": [
-        3.885030880974696,
+        3.9254288659793817,
         4.652379545454545
       ],
       "end": [
-        3.885030880974696,
-        6.629311363636363
+        3.9254288659793817,
+        5.570554545454545
       ],
       "thickness": 0.27616082474226805,
       "height": 2.8,
@@ -3598,7 +3657,7 @@
         6.629311363636363
       ],
       "end": [
-        3.885030880974696,
+        3.9303603092783503,
         6.629311363636363
       ],
       "thickness": 0.2460181818181818,
@@ -3625,7 +3684,7 @@
         4.652379545454545
       ],
       "end": [
-        3.885030880974696,
+        3.9254288659793817,
         4.652379545454545
       ],
       "thickness": 0.2460181818181818,
@@ -3642,22 +3701,20 @@
       "metadata": {
         "roomifyId": "wall_8",
         "rooms": [
-          "room_1",
-          "room_2"
+          "room_2",
+          "room_3"
         ]
       },
-      "children": [
-        "door_op_8"
-      ],
+      "children": [],
       "start": [
-        3.885030880974696,
-        6.543644318181817
+        3.9303603092783503,
+        6.132881818181818
       ],
       "end": [
-        5.414724742268041,
-        6.543644318181817
+        3.9303603092783503,
+        6.629311363636363
       ],
-      "thickness": 0.2460181818181818,
+      "thickness": 0.27616082474226805,
       "height": 2.8,
       "frontSide": "unknown",
       "backSide": "unknown"
@@ -3672,19 +3729,21 @@
         "roomifyId": "wall_9",
         "rooms": [
           "room_1",
-          "exterior"
+          "room_2"
         ]
       },
-      "children": [],
+      "children": [
+        "door_op_7"
+      ],
       "start": [
-        5.414724742268041,
+        3.9303603092783503,
         6.543644318181817
       ],
       "end": [
         5.414724742268041,
-        9.805581818181818
+        6.543644318181817
       ],
-      "thickness": 0.27616082474226805,
+      "thickness": 0.2460181818181818,
       "height": 2.8,
       "frontSide": "unknown",
       "backSide": "unknown"
@@ -3704,14 +3763,14 @@
       },
       "children": [],
       "start": [
-        0.09862886597938145,
-        9.796795454545453
+        5.414724742268041,
+        6.543644318181817
       ],
       "end": [
         5.414724742268041,
-        9.796795454545453
+        9.805581818181818
       ],
-      "thickness": 0.2460181818181818,
+      "thickness": 0.27616082474226805,
       "height": 2.8,
       "frontSide": "unknown",
       "backSide": "unknown"
@@ -3732,13 +3791,13 @@
       "children": [],
       "start": [
         0.09862886597938145,
-        8.979663636363636
-      ],
-      "end": [
-        0.09862886597938145,
         9.796795454545453
       ],
-      "thickness": 0.27616082474226805,
+      "end": [
+        5.414724742268041,
+        9.796795454545453
+      ],
+      "thickness": 0.2460181818181818,
       "height": 2.8,
       "frontSide": "unknown",
       "backSide": "unknown"
@@ -3756,16 +3815,14 @@
           "exterior"
         ]
       },
-      "children": [
-        "window_op_9"
-      ],
+      "children": [],
       "start": [
-        -0.1282175257731959,
-        6.624918181818181
+        0.09862886597938145,
+        8.979663636363636
       ],
       "end": [
-        -0.1282175257731959,
-        9.20810909090909
+        0.09862886597938145,
+        9.796795454545453
       ],
       "thickness": 0.27616082474226805,
       "height": 2.8,
@@ -3780,6 +3837,35 @@
       "visible": true,
       "metadata": {
         "roomifyId": "wall_13",
+        "rooms": [
+          "room_1",
+          "exterior"
+        ]
+      },
+      "children": [
+        "window_op_8"
+      ],
+      "start": [
+        -0.1282175257731959,
+        6.624918181818181
+      ],
+      "end": [
+        -0.1282175257731959,
+        9.20810909090909
+      ],
+      "thickness": 0.27616082474226805,
+      "height": 2.8,
+      "frontSide": "unknown",
+      "backSide": "unknown"
+    },
+    "wall_14": {
+      "object": "node",
+      "id": "wall_14",
+      "type": "wall",
+      "parentId": "level_roomify",
+      "visible": true,
+      "metadata": {
+        "roomifyId": "wall_14",
         "rooms": [
           "room_2",
           "exterior"
@@ -3801,14 +3887,14 @@
       "frontSide": "unknown",
       "backSide": "unknown"
     },
-    "wall_14": {
+    "wall_15": {
       "object": "node",
-      "id": "wall_14",
+      "id": "wall_15",
       "type": "wall",
       "parentId": "level_roomify",
       "visible": true,
       "metadata": {
-        "roomifyId": "wall_14",
+        "roomifyId": "wall_15",
         "rooms": [
           "room_2",
           "exterior"
@@ -3828,14 +3914,14 @@
       "frontSide": "unknown",
       "backSide": "unknown"
     },
-    "wall_15": {
+    "wall_16": {
       "object": "node",
-      "id": "wall_15",
+      "id": "wall_16",
       "type": "wall",
       "parentId": "level_roomify",
       "visible": true,
       "metadata": {
-        "roomifyId": "wall_15",
+        "roomifyId": "wall_16",
         "rooms": [
           "room_2",
           "exterior"
@@ -3855,14 +3941,14 @@
       "frontSide": "unknown",
       "backSide": "unknown"
     },
-    "wall_16": {
+    "wall_17": {
       "object": "node",
-      "id": "wall_16",
+      "id": "wall_17",
       "type": "wall",
       "parentId": "level_roomify",
       "visible": true,
       "metadata": {
-        "roomifyId": "wall_16",
+        "roomifyId": "wall_17",
         "rooms": [
           "room_3",
           "exterior"
@@ -3882,21 +3968,21 @@
       "frontSide": "unknown",
       "backSide": "unknown"
     },
-    "wall_17": {
+    "wall_18": {
       "object": "node",
-      "id": "wall_17",
+      "id": "wall_18",
       "type": "wall",
       "parentId": "level_roomify",
       "visible": true,
       "metadata": {
-        "roomifyId": "wall_17",
+        "roomifyId": "wall_18",
         "rooms": [
           "room_3",
           "exterior"
         ]
       },
       "children": [
-        "window_op_7"
+        "window_op_6"
       ],
       "start": [
         0.10849175257731959,
@@ -3907,33 +3993,6 @@
         6.642490909090909
       ],
       "thickness": 0.27616082474226805,
-      "height": 2.8,
-      "frontSide": "unknown",
-      "backSide": "unknown"
-    },
-    "wall_18": {
-      "object": "node",
-      "id": "wall_18",
-      "type": "wall",
-      "parentId": "level_roomify",
-      "visible": true,
-      "metadata": {
-        "roomifyId": "wall_18",
-        "rooms": [
-          "room_4",
-          "exterior"
-        ]
-      },
-      "children": [],
-      "start": [
-        7.771954639175258,
-        0.11422272727272727
-      ],
-      "end": [
-        9.744531958762888,
-        0.11422272727272727
-      ],
-      "thickness": 0.2460181818181818,
       "height": 2.8,
       "frontSide": "unknown",
       "backSide": "unknown"
@@ -3953,14 +4012,14 @@
       },
       "children": [],
       "start": [
-        9.734669072164948,
+        7.771954639175258,
         0.11422272727272727
       ],
       "end": [
-        9.734669072164948,
-        3.0528429653679656
+        9.744531958762888,
+        0.11422272727272727
       ],
-      "thickness": 0.27616082474226805,
+      "thickness": 0.2460181818181818,
       "height": 2.8,
       "frontSide": "unknown",
       "backSide": "unknown"
@@ -3980,12 +4039,12 @@
       },
       "children": [],
       "start": [
-        7.771954639175258,
-        0.10543636363636363
+        9.734669072164948,
+        0.11422272727272727
       ],
       "end": [
-        7.771954639175258,
-        3.2158090909090906
+        9.734669072164948,
+        3.0528429653679656
       ],
       "thickness": 0.27616082474226805,
       "height": 2.8,
@@ -4000,6 +4059,33 @@
       "visible": true,
       "metadata": {
         "roomifyId": "wall_21",
+        "rooms": [
+          "room_4",
+          "exterior"
+        ]
+      },
+      "children": [],
+      "start": [
+        7.771954639175258,
+        0.10543636363636363
+      ],
+      "end": [
+        7.771954639175258,
+        3.2158090909090906
+      ],
+      "thickness": 0.27616082474226805,
+      "height": 2.8,
+      "frontSide": "unknown",
+      "backSide": "unknown"
+    },
+    "wall_22": {
+      "object": "node",
+      "id": "wall_22",
+      "type": "wall",
+      "parentId": "level_roomify",
+      "visible": true,
+      "metadata": {
+        "roomifyId": "wall_22",
         "rooms": [
           "room_5",
           "exterior"
@@ -4019,14 +4105,14 @@
       "frontSide": "unknown",
       "backSide": "unknown"
     },
-    "wall_22": {
+    "wall_23": {
       "object": "node",
-      "id": "wall_22",
+      "id": "wall_23",
       "type": "wall",
       "parentId": "level_roomify",
       "visible": true,
       "metadata": {
-        "roomifyId": "wall_22",
+        "roomifyId": "wall_23",
         "rooms": [
           "room_5",
           "exterior"
@@ -4048,14 +4134,14 @@
       "frontSide": "unknown",
       "backSide": "unknown"
     },
-    "wall_23": {
+    "wall_24": {
       "object": "node",
-      "id": "wall_23",
+      "id": "wall_24",
       "type": "wall",
       "parentId": "level_roomify",
       "visible": true,
       "metadata": {
-        "roomifyId": "wall_23",
+        "roomifyId": "wall_24",
         "rooms": [
           "room_5",
           "exterior"
@@ -4075,14 +4161,14 @@
       "frontSide": "unknown",
       "backSide": "unknown"
     },
-    "wall_24": {
+    "wall_25": {
       "object": "node",
-      "id": "wall_24",
+      "id": "wall_25",
       "type": "wall",
       "parentId": "level_roomify",
       "visible": true,
       "metadata": {
-        "roomifyId": "wall_24",
+        "roomifyId": "wall_25",
         "rooms": [
           "room_6",
           "unknown"
@@ -4106,7 +4192,7 @@
       "object": "node",
       "id": "window_op_1",
       "type": "window",
-      "parentId": "wall_13",
+      "parentId": "wall_14",
       "visible": true,
       "metadata": {
         "roomifyId": "op_1"
@@ -4123,7 +4209,7 @@
         0,
         0
       ],
-      "wallId": "wall_13",
+      "wallId": "wall_14",
       "width": 2.130383505154639,
       "height": 1.5
     },
@@ -4218,7 +4304,7 @@
       "object": "node",
       "id": "door_op_5",
       "type": "door",
-      "parentId": "wall_22",
+      "parentId": "wall_23",
       "visible": true,
       "metadata": {
         "roomifyId": "op_5"
@@ -4239,47 +4325,18 @@
         0,
         0
       ],
-      "wallId": "wall_22",
+      "wallId": "wall_23",
       "width": 0.8083454545454546,
       "height": 2.1
     },
-    "door_op_6": {
+    "window_op_6": {
       "object": "node",
-      "id": "door_op_6",
-      "type": "door",
-      "parentId": "wall_5",
+      "id": "window_op_6",
+      "type": "window",
+      "parentId": "wall_18",
       "visible": true,
       "metadata": {
         "roomifyId": "op_6"
-      },
-      "doorType": "hinged",
-      "leafCount": 1,
-      "openingKind": "door",
-      "hingesSide": "left",
-      "threshold": true,
-      "handle": true,
-      "position": [
-        1.2256977272727272,
-        1.05,
-        0
-      ],
-      "rotation": [
-        0,
-        0,
-        0
-      ],
-      "wallId": "wall_5",
-      "width": 0.8083454545454546,
-      "height": 2.1
-    },
-    "window_op_7": {
-      "object": "node",
-      "id": "window_op_7",
-      "type": "window",
-      "parentId": "wall_17",
-      "visible": true,
-      "metadata": {
-        "roomifyId": "op_7"
       },
       "windowType": "fixed",
       "sill": true,
@@ -4293,18 +4350,18 @@
         0,
         0
       ],
-      "wallId": "wall_17",
+      "wallId": "wall_18",
       "width": 0.8083454545454546,
       "height": 1.5
     },
-    "door_op_8": {
+    "door_op_7": {
       "object": "node",
-      "id": "door_op_8",
+      "id": "door_op_7",
       "type": "door",
-      "parentId": "wall_8",
+      "parentId": "wall_9",
       "visible": true,
       "metadata": {
-        "roomifyId": "op_8"
+        "roomifyId": "op_7"
       },
       "doorType": "hinged",
       "leafCount": 1,
@@ -4313,7 +4370,7 @@
       "threshold": true,
       "handle": true,
       "position": [
-        0.6025825210871602,
+        0.5572530927835052,
         1.05,
         0
       ],
@@ -4322,18 +4379,18 @@
         0,
         0
       ],
-      "wallId": "wall_8",
+      "wallId": "wall_9",
       "width": 0.8284824742268041,
       "height": 2.1
     },
-    "window_op_9": {
+    "window_op_8": {
       "object": "node",
-      "id": "window_op_9",
+      "id": "window_op_8",
       "type": "window",
-      "parentId": "wall_12",
+      "parentId": "wall_13",
       "visible": true,
       "metadata": {
-        "roomifyId": "op_9"
+        "roomifyId": "op_8"
       },
       "windowType": "fixed",
       "sill": true,
@@ -4347,7 +4404,7 @@
         0,
         0
       ],
-      "wallId": "wall_12",
+      "wallId": "wall_13",
       "width": 2.337172727272727,
       "height": 1.5
     },
@@ -4407,11 +4464,11 @@
       "autoFromWalls": false,
       "boundaryWallIds": [
         "wall_6",
-        "wall_8",
         "wall_9",
         "wall_10",
         "wall_11",
-        "wall_12"
+        "wall_12",
+        "wall_13"
       ],
       "spaceRole": "room",
       "roomNumber": "1",
@@ -4589,9 +4646,10 @@
         "wall_5",
         "wall_7",
         "wall_8",
-        "wall_13",
+        "wall_9",
         "wall_14",
-        "wall_15"
+        "wall_15",
+        "wall_16"
       ],
       "spaceRole": "room",
       "roomNumber": "2",
@@ -4742,8 +4800,9 @@
         "wall_5",
         "wall_6",
         "wall_7",
-        "wall_16",
-        "wall_17"
+        "wall_8",
+        "wall_17",
+        "wall_18"
       ],
       "spaceRole": "room",
       "roomNumber": "3",
@@ -4824,9 +4883,9 @@
       "autoFromWalls": false,
       "boundaryWallIds": [
         "wall_2",
-        "wall_18",
         "wall_19",
-        "wall_20"
+        "wall_20",
+        "wall_21"
       ],
       "spaceRole": "room",
       "roomNumber": "4",
@@ -4908,9 +4967,9 @@
       "boundaryWallIds": [
         "wall_2",
         "wall_3",
-        "wall_21",
         "wall_22",
-        "wall_23"
+        "wall_23",
+        "wall_24"
       ],
       "spaceRole": "room",
       "roomNumber": "5",
@@ -4983,7 +5042,7 @@
       "autoFromWalls": false,
       "boundaryWallIds": [
         "wall_1",
-        "wall_24"
+        "wall_25"
       ],
       "spaceRole": "room",
       "roomNumber": "6",

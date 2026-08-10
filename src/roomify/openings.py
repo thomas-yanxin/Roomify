@@ -683,7 +683,38 @@ def derive_wall_segments(
         for seg in segments
     ]
     centered = [_center_open_segment(seg, room_masks) for seg in resolved]
-    return _close_tee_junctions(_fuse_collinear_segments(centered, t), t)
+    walled = [seg for seg in centered if _rides_on_wall(seg, walls)]
+    return _close_tee_junctions(_fuse_collinear_segments(walled, t), t)
+
+
+def _rides_on_wall(seg: WallSegment, walls: WallExtraction) -> bool:
+    """Is this edge structure, or a dashed functional split?
+
+    Room extraction seals along dashed zone dividers (玄关/走廊/餐厅), so the
+    room polygon has an edge there and the pairing turns it into a wall
+    segment — but you cannot lean on a dashed line. A segment whose ink is
+    the divider mask rather than the wall mask is a zone boundary; the split
+    is still reported, through the room's ``zone_bounded`` flag and its
+    ``room_zone_boundary`` warning, which is where it belongs.
+    """
+    if walls.zones is None:
+        return True
+    on_wall = _ink_share(seg, cv2.dilate(walls.union, np.ones((5, 5), np.uint8)))
+    if on_wall >= 0.5:
+        return True
+    return on_wall >= _ink_share(seg, cv2.dilate(walls.zones, np.ones((7, 7), np.uint8)))
+
+
+def _ink_share(seg: WallSegment, mask: np.ndarray) -> float:
+    (x0, y0), (x1, y1) = seg.start, seg.end
+    n = max(2, int(round(float(np.hypot(x1 - x0, y1 - y0)))))
+    h, w = mask.shape
+    hits = 0
+    for xf, yf in zip(np.linspace(x0, x1, n), np.linspace(y0, y1, n), strict=True):
+        xi, yi = int(round(xf)), int(round(yf))
+        if 0 <= yi < h and 0 <= xi < w and mask[yi, xi]:
+            hits += 1
+    return hits / n
 
 
 def _ink_between(

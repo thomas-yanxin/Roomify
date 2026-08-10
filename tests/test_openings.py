@@ -357,3 +357,31 @@ def test_far_side_of_a_wall_is_the_room_behind_it():
     # …and a wall with nothing but building behind it is still "unknown"
     lonely = WallSegment((140.0, 50.0), (140.0, 150.0), 10.0, (0, "exterior"))
     assert _resolve_connects(lonely, walls, [left, None], silhouette) == (0, "unknown")
+
+
+def test_dashed_zone_divider_is_not_reported_as_a_wall():
+    """You cannot lean on a dashed line.
+
+    Listing plans split open space (玄关/走廊/餐厅) with dashed dividers, and
+    room extraction seals along them — so the room polygon has an edge there
+    and the pairing turns it into a wall segment. It is a functional split,
+    not structure: 15 such segments on the corpus.
+    """
+    img = blank()
+    draw_wall_rect(img, 100, 100, 500, 400, thickness=10)
+    for y in range(108, 396, 12):
+        cv2.line(img, (300, y), (300, y + 6), (120, 120, 120), 2)
+
+    wx, drafts = _drafts(img)
+    assert wx.zones is not None, "fixture must produce a zone divider"
+    assert len(drafts) == 2, "the divider must still split the space"
+
+    segments = derive_wall_segments(drafts, wx)
+    on_divider = [
+        s for s in segments
+        if abs((s.start[0] + s.end[0]) / 2 - 300) < 10 and abs(s.end[1] - s.start[1]) > 60
+    ]
+    assert on_divider == [], [(s.start, s.end, s.rooms) for s in on_divider]
+
+    # the real walls around the space are untouched
+    assert len(segments) >= 4

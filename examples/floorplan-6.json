@@ -2272,7 +2272,7 @@
   "openings": [
     {
       "id": "op_1",
-      "element_type": "sliding_window",
+      "element_type": "sliding_door",
       "raw_text": null,
       "bbox_px": {
         "x0": 581.0,
@@ -2286,8 +2286,8 @@
       },
       "width_px": 21.0,
       "width_mm": 522.3767512342517,
-      "sill_height_mm": 900.0,
-      "height_mm": 1500.0,
+      "sill_height_mm": 0.0,
+      "height_mm": 2100.0,
       "wall_id": "wall_45",
       "connects": [
         "room_7",
@@ -2302,7 +2302,7 @@
     },
     {
       "id": "op_2",
-      "element_type": "railing",
+      "element_type": "sliding_window",
       "raw_text": null,
       "bbox_px": {
         "x0": 644.0,
@@ -2316,8 +2316,8 @@
       },
       "width_px": 150.0,
       "width_mm": 3731.262508816084,
-      "sill_height_mm": null,
-      "height_mm": null,
+      "sill_height_mm": 900.0,
+      "height_mm": 1500.0,
       "wall_id": "wall_43",
       "connects": [
         "room_7",
@@ -2667,7 +2667,22 @@
       "confidence": 0.85
     }
   ],
-  "elements": [],
+  "elements": [
+    {
+      "id": "el_1",
+      "element_type": "single_door",
+      "raw_text": null,
+      "bbox_px": {
+        "x0": 95.72505262703908,
+        "y0": 187.67455861965374,
+        "x1": 153.40505262703908,
+        "y1": 244.79455861965374
+      },
+      "room_id": null,
+      "source": "vlm",
+      "confidence": 0.5
+    }
+  ],
   "warnings": [
     {
       "code": "room_gap_fallback",
@@ -2676,12 +2691,12 @@
     },
     {
       "code": "room_already_measured",
-      "message": "VLM reported 走廊 where no unclaimed floor remains; it is a zone of an already-measured room, not a room of its own",
+      "message": "VLM reported 玄关 where no unclaimed floor remains; it is a zone of an already-measured room, not a room of its own",
       "ref": "vlm_1"
     },
     {
       "code": "room_already_measured",
-      "message": "VLM reported 玄关 where no unclaimed floor remains; it is a zone of an already-measured room, not a room of its own",
+      "message": "VLM reported 走廊 where no unclaimed floor remains; it is a zone of an already-measured room, not a room of its own",
       "ref": "vlm_2"
     },
     {
@@ -2693,6 +2708,21 @@
       "code": "opening_span_implausible",
       "message": "candidate J was read as passage but it spans 3756mm between two indoor rooms — too wide for one opening, and a partition the wall mask missed reads identically; class left unresolved",
       "ref": "op_10"
+    },
+    {
+      "code": "opening_geometry_is_bbox",
+      "message": "a single_door was found only by the VLM; it is reported under elements with approximate bounding-box geometry",
+      "ref": null
+    },
+    {
+      "code": "opening_without_a_wall",
+      "message": "a sliding_window was reported where no wall runs; an opening is a hole in a wall, so it is not emitted",
+      "ref": null
+    },
+    {
+      "code": "opening_without_a_wall",
+      "message": "a sliding_window was reported where no wall runs; an opening is a hole in a wall, so it is not emitted",
+      "ref": null
     },
     {
       "code": "vertical_defaults_assumed",
@@ -5010,7 +5040,7 @@
           "openings": [
             {
               "id": "op_1",
-              "element_type": "sliding_window",
+              "element_type": "sliding_door",
               "raw_text": null,
               "bbox_px": {
                 "x0": 581.0,
@@ -5024,8 +5054,8 @@
               },
               "width_px": 21.0,
               "width_mm": 522.3767512342517,
-              "sill_height_mm": 900.0,
-              "height_mm": 1500.0,
+              "sill_height_mm": 0.0,
+              "height_mm": 2100.0,
               "wall_id": "wall_45",
               "connects": [
                 "room_7",
@@ -5040,7 +5070,7 @@
             },
             {
               "id": "op_2",
-              "element_type": "railing",
+              "element_type": "sliding_window",
               "raw_text": null,
               "bbox_px": {
                 "x0": 644.0,
@@ -5054,8 +5084,8 @@
               },
               "width_px": 150.0,
               "width_mm": 3731.262508816084,
-              "sill_height_mm": null,
-              "height_mm": null,
+              "sill_height_mm": 900.0,
+              "height_mm": 1500.0,
               "wall_id": "wall_43",
               "connects": [
                 "room_7",
@@ -5405,7 +5435,22 @@
               "confidence": 0.85
             }
           ],
-          "elements": [],
+          "elements": [
+            {
+              "id": "el_1",
+              "element_type": "single_door",
+              "raw_text": null,
+              "bbox_px": {
+                "x0": 95.72505262703908,
+                "y0": 187.67455861965374,
+                "x1": 153.40505262703908,
+                "y1": 244.79455861965374
+              },
+              "room_id": null,
+              "source": "vlm",
+              "confidence": 0.5
+            }
+          ],
           "warnings": [
             {
               "code": "room_gap_fallback",
@@ -5414,12 +5459,12 @@
             },
             {
               "code": "room_already_measured",
-              "message": "VLM reported 走廊 where no unclaimed floor remains; it is a zone of an already-measured room, not a room of its own",
+              "message": "VLM reported 玄关 where no unclaimed floor remains; it is a zone of an already-measured room, not a room of its own",
               "ref": "vlm_1"
             },
             {
               "code": "room_already_measured",
-              "message": "VLM reported 玄关 where no unclaimed floor remains; it is a zone of an already-measured room, not a room of its own",
+              "message": "VLM reported 走廊 where no unclaimed floor remains; it is a zone of an already-measured room, not a room of its own",
               "ref": "vlm_2"
             },
             {
@@ -5431,6 +5476,21 @@
               "code": "opening_span_implausible",
               "message": "candidate J was read as passage but it spans 3756mm between two indoor rooms — too wide for one opening, and a partition the wall mask missed reads identically; class left unresolved",
               "ref": "op_10"
+            },
+            {
+              "code": "opening_geometry_is_bbox",
+              "message": "a single_door was found only by the VLM; it is reported under elements with approximate bounding-box geometry",
+              "ref": null
+            },
+            {
+              "code": "opening_without_a_wall",
+              "message": "a sliding_window was reported where no wall runs; an opening is a hole in a wall, so it is not emitted",
+              "ref": null
+            },
+            {
+              "code": "opening_without_a_wall",
+              "message": "a sliding_window was reported where no wall runs; an opening is a hole in a wall, so it is not emitted",
+              "ref": null
             },
             {
               "code": "vertical_defaults_assumed",
@@ -6756,7 +6816,9 @@
           "exterior"
         ]
       },
-      "children": [],
+      "children": [
+        "window_op_2"
+      ],
       "start": [
         14.427548367422192,
         0.024875083392107228
@@ -6811,7 +6873,7 @@
         ]
       },
       "children": [
-        "window_op_1"
+        "door_op_1"
       ],
       "start": [
         12.860418113719437,
@@ -6853,20 +6915,24 @@
       "frontSide": "unknown",
       "backSide": "unknown"
     },
-    "window_op_1": {
+    "door_op_1": {
       "object": "node",
-      "id": "window_op_1",
-      "type": "window",
+      "id": "door_op_1",
+      "type": "door",
       "parentId": "wall_45",
       "visible": true,
       "metadata": {
         "roomifyId": "op_1"
       },
-      "windowType": "sliding",
-      "sill": true,
+      "doorType": "sliding",
+      "leafCount": 1,
+      "openingKind": "door",
+      "hingesSide": "left",
+      "threshold": true,
+      "handle": true,
       "position": [
         0.24875083392107228,
-        1.65,
+        1.05,
         0
       ],
       "rotation": [
@@ -6876,6 +6942,31 @@
       ],
       "wallId": "wall_45",
       "width": 0.5223767512342518,
+      "height": 2.1
+    },
+    "window_op_2": {
+      "object": "node",
+      "id": "window_op_2",
+      "type": "window",
+      "parentId": "wall_43",
+      "visible": true,
+      "metadata": {
+        "roomifyId": "op_2"
+      },
+      "windowType": "sliding",
+      "sill": true,
+      "position": [
+        1.9526940462804172,
+        1.65,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "wallId": "wall_43",
+      "width": 3.731262508816084,
       "height": 1.5
     },
     "door_op_3": {

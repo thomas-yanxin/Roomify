@@ -34,7 +34,7 @@ from roomify.vlm import ChainRead, OpeningsRead, RoomRead
 from roomify.walls import WallExtraction
 
 if TYPE_CHECKING:  # openings imports merge; annotate without the cycle
-    from roomify.openings import OpeningCandidate
+    from roomify.openings import OpeningCandidate, WallSegment
 
 MIN_ROOM_SQM = 0.5  # below this a nameless room is segmentation junk
 DEVIATION_FLAG_THRESHOLD = 0.10
@@ -680,6 +680,7 @@ def merge_openings(
     image_shape: tuple[int, int],
     rooms: list[RoomDraft] | None = None,
     scale: ScaleDraft | None = None,
+    segments: list[WallSegment] | None = None,
 ) -> tuple[list[OpeningDraft], list[ElementDraft], list[ParseWarning], list[Unresolved]]:
     drafts: list[OpeningDraft] = []
     elements: list[ElementDraft] = []
@@ -824,6 +825,20 @@ def merge_openings(
             _boxes_overlap(bbox, c.bbox, slack=8.0) for c in candidates
         ):
             continue
+        if approximate_opening and segments:
+            snapped = _snap_to_wall(bbox, segments)
+            if snapped is None:
+                warnings.append(
+                    ParseWarning(
+                        code="opening_without_a_wall",
+                        message=(
+                            f"a {extra.element_type} was reported where no wall runs; "
+                            "an opening is a hole in a wall, so it is not emitted"
+                        ),
+                    )
+                )
+                continue
+            bbox = snapped
         elements.append(
             ElementDraft(
                 element_type=extra.element_type,
@@ -844,6 +859,38 @@ def merge_openings(
                 )
             )
     return drafts, elements, warnings, unresolved
+
+
+MAX_SNAP_THICKNESSES = 3.0  # of the matched wall; beyond it there is no wall to be in
+
+
+def _snap_to_wall(
+    bbox: tuple[float, float, float, float], segments: list[WallSegment]
+) -> tuple[float, float, float, float] | None:
+    """Move a VLM-only opening onto the wall it belongs in, or reject it.
+
+    ``box_2d`` coordinates drift — measured on the corpus, 18 of 49
+    opening-shaped extras sat beside a wall rather than on one and 9 had no
+    wall within three thicknesses, up to 1.4m adrift, floating in the middle
+    of a room. A door or window is a hole in a wall: a nearby wall says
+    exactly where it is, and no nearby wall means we do not know, so nothing
+    is emitted rather than geometry that cannot be true.
+    """
+    cx, cy = (bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2
+    best: tuple[float, float, float] | None = None
+    for seg in segments:
+        (ax, ay), (bx, by) = seg.start, seg.end
+        dx, dy = bx - ax, by - ay
+        span = dx * dx + dy * dy
+        u = 0.0 if span == 0 else max(0.0, min(1.0, ((cx - ax) * dx + (cy - ay) * dy) / span))
+        px, py = ax + u * dx, ay + u * dy
+        gap = math.hypot(cx - px, cy - py) - MAX_SNAP_THICKNESSES * seg.thickness_px
+        if best is None or gap < best[0]:
+            best = (gap, px, py)
+    if best is None or best[0] > 0:
+        return None
+    ox, oy = best[1] - cx, best[2] - cy
+    return (bbox[0] + ox, bbox[1] + oy, bbox[2] + ox, bbox[3] + oy)
 
 
 def _boxes_overlap(
