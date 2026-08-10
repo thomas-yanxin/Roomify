@@ -262,7 +262,7 @@
       "area_deviation": -0.0077711313731291115,
       "area_deviation_flag": false,
       "source": "cv+vlm",
-      "confidence": 0.95
+      "confidence": 0.98
     },
     {
       "id": "room_3",
@@ -588,7 +588,7 @@
       "area_deviation": 0.0023277147371082276,
       "area_deviation_flag": false,
       "source": "cv+vlm",
-      "confidence": 0.95
+      "confidence": 0.98
     },
     {
       "id": "room_6",
@@ -938,7 +938,7 @@
       "area_deviation": -0.0297814847826063,
       "area_deviation_flag": false,
       "source": "cv+vlm",
-      "confidence": 0.9
+      "confidence": 0.95
     },
     {
       "id": "room_11",
@@ -946,58 +946,58 @@
       "room_type": "bathroom",
       "polygon_px": [
         {
-          "x": 577.965,
+          "x": 567.0600000000001,
           "y": 236.64000000000001
         },
         {
-          "x": 650.665,
+          "x": 647.03,
           "y": 236.64000000000001
         },
         {
-          "x": 650.665,
-          "y": 288.84
+          "x": 647.03,
+          "y": 285.35999999999996
         },
         {
-          "x": 577.965,
-          "y": 288.84
+          "x": 567.0600000000001,
+          "y": 285.35999999999996
         }
       ],
-      "area_px": 3794.939999999997,
-      "perimeter_px": 249.7999999999999,
+      "area_px": 3896.138399999996,
+      "perimeter_px": 257.3799999999999,
       "edge_lengths_px": [
-        72.69999999999993,
-        52.19999999999996,
-        72.69999999999993,
-        52.19999999999996
+        79.96999999999991,
+        48.71999999999994,
+        79.96999999999991,
+        48.71999999999994
       ],
       "polygon_mm": [
         {
-          "x": 10252.613504347826,
+          "x": 10030.322191304349,
           "y": 2080.32225
         },
         {
-          "x": 11734.555591304346,
+          "x": 11660.45848695652,
           "y": 2080.32225
         },
         {
-          "x": 11734.555591304346,
-          "y": 3035.9084999999995
+          "x": 11660.45848695652,
+          "y": 2972.202749999999
         },
         {
-          "x": 10252.613504347826,
-          "y": 3035.9084999999995
+          "x": 10030.322191304349,
+          "y": 2972.202749999999
         }
       ],
-      "area_sqm": 1.4161234815919586,
-      "perimeter_mm": 4875.056673913039,
+      "area_sqm": 1.4538867744344026,
+      "perimeter_mm": 5044.033591304341,
       "edge_lengths_mm": [
-        1481.9420869565201,
-        955.5862499999994,
-        1481.9420869565201,
-        955.5862499999994
+        1630.1362956521716,
+        891.8804999999988,
+        1630.1362956521716,
+        891.8804999999988
       ],
       "printed_area_sqm": 1.13,
-      "area_deviation": 0.25320662087783957,
+      "area_deviation": 0.2866254641012414,
       "area_deviation_flag": true,
       "source": "vlm",
       "confidence": 0.5
@@ -2343,7 +2343,7 @@
         }
       ],
       "source": "cv+vlm",
-      "confidence": 0.95
+      "confidence": 0.9
     },
     {
       "id": "op_4",
@@ -2373,7 +2373,7 @@
       "protrusion_polygon_px": null,
       "protrusion_polygon_mm": null,
       "source": "cv+vlm",
-      "confidence": 0.9
+      "confidence": 0.85
     },
     {
       "id": "op_5",
@@ -2736,11 +2736,11 @@
       "protrusion_polygon_px": null,
       "protrusion_polygon_mm": null,
       "source": "cv+vlm",
-      "confidence": 0.85
+      "confidence": 0.9
     },
     {
       "id": "op_17",
-      "element_type": "passage",
+      "element_type": "sliding_door",
       "raw_text": null,
       "bbox_px": {
         "x0": 575.0,
@@ -2766,7 +2766,7 @@
       "protrusion_polygon_px": null,
       "protrusion_polygon_mm": null,
       "source": "cv+vlm",
-      "confidence": 0.75
+      "confidence": 0.85
     },
     {
       "id": "op_18",
@@ -2796,7 +2796,7 @@
       "protrusion_polygon_px": null,
       "protrusion_polygon_mm": null,
       "source": "cv+vlm",
-      "confidence": 0.8
+      "confidence": 0.9
     },
     {
       "id": "op_19",
@@ -2860,10 +2860,53 @@
         }
       ],
       "source": "cv+vlm",
-      "confidence": 0.9
+      "confidence": 0.95
     }
   ],
-  "elements": [],
+  "elements": [
+    {
+      "id": "el_1",
+      "element_type": "single_door",
+      "raw_text": null,
+      "bbox_px": {
+        "x0": 420.20599999999996,
+        "y0": 374.44800000000004,
+        "x1": 456.556,
+        "y1": 409.248
+      },
+      "room_id": "room_1",
+      "source": "vlm",
+      "confidence": 0.5
+    },
+    {
+      "id": "el_2",
+      "element_type": "sliding_window",
+      "raw_text": null,
+      "bbox_px": {
+        "x0": 173.02599999999998,
+        "y0": 618.048,
+        "x1": 354.776,
+        "y1": 652.848
+      },
+      "room_id": null,
+      "source": "vlm",
+      "confidence": 0.5
+    },
+    {
+      "id": "el_3",
+      "element_type": "bay_window",
+      "raw_text": null,
+      "bbox_px": {
+        "x0": 376.586,
+        "y0": 618.048,
+        "x1": 572.876,
+        "y1": 652.848
+      },
+      "room_id": null,
+      "source": "vlm",
+      "confidence": 0.5
+    }
+  ],
   "warnings": [
     {
       "code": "room_vetoed",
@@ -2874,6 +2917,21 @@
       "code": "room_geometry_is_bbox",
       "message": "room 淋浴区 was found only by the VLM; its geometry is an approximate bounding box",
       "ref": "room_11"
+    },
+    {
+      "code": "opening_geometry_is_bbox",
+      "message": "a single_door was found only by the VLM; it is reported under elements with approximate bounding-box geometry",
+      "ref": null
+    },
+    {
+      "code": "opening_geometry_is_bbox",
+      "message": "a sliding_window was found only by the VLM; it is reported under elements with approximate bounding-box geometry",
+      "ref": null
+    },
+    {
+      "code": "opening_geometry_is_bbox",
+      "message": "a bay_window was found only by the VLM; it is reported under elements with approximate bounding-box geometry",
+      "ref": null
     },
     {
       "code": "vertical_defaults_assumed",
@@ -3204,7 +3262,7 @@
               "area_deviation": -0.0077711313731291115,
               "area_deviation_flag": false,
               "source": "cv+vlm",
-              "confidence": 0.95
+              "confidence": 0.98
             },
             {
               "id": "room_3",
@@ -3530,7 +3588,7 @@
               "area_deviation": 0.0023277147371082276,
               "area_deviation_flag": false,
               "source": "cv+vlm",
-              "confidence": 0.95
+              "confidence": 0.98
             },
             {
               "id": "room_6",
@@ -3880,7 +3938,7 @@
               "area_deviation": -0.0297814847826063,
               "area_deviation_flag": false,
               "source": "cv+vlm",
-              "confidence": 0.9
+              "confidence": 0.95
             },
             {
               "id": "room_11",
@@ -3888,58 +3946,58 @@
               "room_type": "bathroom",
               "polygon_px": [
                 {
-                  "x": 577.965,
+                  "x": 567.0600000000001,
                   "y": 236.64000000000001
                 },
                 {
-                  "x": 650.665,
+                  "x": 647.03,
                   "y": 236.64000000000001
                 },
                 {
-                  "x": 650.665,
-                  "y": 288.84
+                  "x": 647.03,
+                  "y": 285.35999999999996
                 },
                 {
-                  "x": 577.965,
-                  "y": 288.84
+                  "x": 567.0600000000001,
+                  "y": 285.35999999999996
                 }
               ],
-              "area_px": 3794.939999999997,
-              "perimeter_px": 249.7999999999999,
+              "area_px": 3896.138399999996,
+              "perimeter_px": 257.3799999999999,
               "edge_lengths_px": [
-                72.69999999999993,
-                52.19999999999996,
-                72.69999999999993,
-                52.19999999999996
+                79.96999999999991,
+                48.71999999999994,
+                79.96999999999991,
+                48.71999999999994
               ],
               "polygon_mm": [
                 {
-                  "x": 10252.613504347826,
+                  "x": 10030.322191304349,
                   "y": 2080.32225
                 },
                 {
-                  "x": 11734.555591304346,
+                  "x": 11660.45848695652,
                   "y": 2080.32225
                 },
                 {
-                  "x": 11734.555591304346,
-                  "y": 3035.9084999999995
+                  "x": 11660.45848695652,
+                  "y": 2972.202749999999
                 },
                 {
-                  "x": 10252.613504347826,
-                  "y": 3035.9084999999995
+                  "x": 10030.322191304349,
+                  "y": 2972.202749999999
                 }
               ],
-              "area_sqm": 1.4161234815919586,
-              "perimeter_mm": 4875.056673913039,
+              "area_sqm": 1.4538867744344026,
+              "perimeter_mm": 5044.033591304341,
               "edge_lengths_mm": [
-                1481.9420869565201,
-                955.5862499999994,
-                1481.9420869565201,
-                955.5862499999994
+                1630.1362956521716,
+                891.8804999999988,
+                1630.1362956521716,
+                891.8804999999988
               ],
               "printed_area_sqm": 1.13,
-              "area_deviation": 0.25320662087783957,
+              "area_deviation": 0.2866254641012414,
               "area_deviation_flag": true,
               "source": "vlm",
               "confidence": 0.5
@@ -5285,7 +5343,7 @@
                 }
               ],
               "source": "cv+vlm",
-              "confidence": 0.95
+              "confidence": 0.9
             },
             {
               "id": "op_4",
@@ -5315,7 +5373,7 @@
               "protrusion_polygon_px": null,
               "protrusion_polygon_mm": null,
               "source": "cv+vlm",
-              "confidence": 0.9
+              "confidence": 0.85
             },
             {
               "id": "op_5",
@@ -5678,11 +5736,11 @@
               "protrusion_polygon_px": null,
               "protrusion_polygon_mm": null,
               "source": "cv+vlm",
-              "confidence": 0.85
+              "confidence": 0.9
             },
             {
               "id": "op_17",
-              "element_type": "passage",
+              "element_type": "sliding_door",
               "raw_text": null,
               "bbox_px": {
                 "x0": 575.0,
@@ -5708,7 +5766,7 @@
               "protrusion_polygon_px": null,
               "protrusion_polygon_mm": null,
               "source": "cv+vlm",
-              "confidence": 0.75
+              "confidence": 0.85
             },
             {
               "id": "op_18",
@@ -5738,7 +5796,7 @@
               "protrusion_polygon_px": null,
               "protrusion_polygon_mm": null,
               "source": "cv+vlm",
-              "confidence": 0.8
+              "confidence": 0.9
             },
             {
               "id": "op_19",
@@ -5802,10 +5860,53 @@
                 }
               ],
               "source": "cv+vlm",
-              "confidence": 0.9
+              "confidence": 0.95
             }
           ],
-          "elements": [],
+          "elements": [
+            {
+              "id": "el_1",
+              "element_type": "single_door",
+              "raw_text": null,
+              "bbox_px": {
+                "x0": 420.20599999999996,
+                "y0": 374.44800000000004,
+                "x1": 456.556,
+                "y1": 409.248
+              },
+              "room_id": "room_1",
+              "source": "vlm",
+              "confidence": 0.5
+            },
+            {
+              "id": "el_2",
+              "element_type": "sliding_window",
+              "raw_text": null,
+              "bbox_px": {
+                "x0": 173.02599999999998,
+                "y0": 618.048,
+                "x1": 354.776,
+                "y1": 652.848
+              },
+              "room_id": null,
+              "source": "vlm",
+              "confidence": 0.5
+            },
+            {
+              "id": "el_3",
+              "element_type": "bay_window",
+              "raw_text": null,
+              "bbox_px": {
+                "x0": 376.586,
+                "y0": 618.048,
+                "x1": 572.876,
+                "y1": 652.848
+              },
+              "room_id": null,
+              "source": "vlm",
+              "confidence": 0.5
+            }
+          ],
           "warnings": [
             {
               "code": "room_vetoed",
@@ -5816,6 +5917,21 @@
               "code": "room_geometry_is_bbox",
               "message": "room 淋浴区 was found only by the VLM; its geometry is an approximate bounding box",
               "ref": "room_11"
+            },
+            {
+              "code": "opening_geometry_is_bbox",
+              "message": "a single_door was found only by the VLM; it is reported under elements with approximate bounding-box geometry",
+              "ref": null
+            },
+            {
+              "code": "opening_geometry_is_bbox",
+              "message": "a sliding_window was found only by the VLM; it is reported under elements with approximate bounding-box geometry",
+              "ref": null
+            },
+            {
+              "code": "opening_geometry_is_bbox",
+              "message": "a bay_window was found only by the VLM; it is reported under elements with approximate bounding-box geometry",
+              "ref": null
             },
             {
               "code": "vertical_defaults_assumed",
@@ -7718,12 +7834,12 @@
       "metadata": {
         "roomifyId": "op_17"
       },
-      "doorType": "hinged",
+      "doorType": "sliding",
       "leafCount": 1,
-      "openingKind": "opening",
+      "openingKind": "door",
       "hingesSide": "left",
-      "threshold": false,
-      "handle": false,
+      "threshold": true,
+      "handle": true,
       "position": [
         1.0297265624999996,
         1.05,
@@ -8818,20 +8934,20 @@
       "name": "淋浴区",
       "polygon": [
         [
-          10.252613504347826,
+          10.030322191304348,
           2.08032225
         ],
         [
-          11.734555591304346,
+          11.66045848695652,
           2.08032225
         ],
         [
-          11.734555591304346,
-          3.0359084999999997
+          11.66045848695652,
+          2.9722027499999992
         ],
         [
-          10.252613504347826,
-          3.0359084999999997
+          10.030322191304348,
+          2.9722027499999992
         ]
       ],
       "autoFromWalls": false,
@@ -8853,20 +8969,20 @@
       "name": "Floor - 淋浴区",
       "polygon": [
         [
-          10.252613504347826,
+          10.030322191304348,
           2.08032225
         ],
         [
-          11.734555591304346,
+          11.66045848695652,
           2.08032225
         ],
         [
-          11.734555591304346,
-          3.0359084999999997
+          11.66045848695652,
+          2.9722027499999992
         ],
         [
-          10.252613504347826,
-          3.0359084999999997
+          10.030322191304348,
+          2.9722027499999992
         ]
       ],
       "holes": [],

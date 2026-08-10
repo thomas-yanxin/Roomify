@@ -74,6 +74,11 @@ RoomType = Literal[
     "unknown_space",
 ]
 
+# Room types the plan draws inside the footprint but which are OUTDOORS:
+# openings onto them may legitimately be windows, and they must never count
+# as the "interior" side of an adjacency test.
+OUTDOOR_ROOM_TYPES = frozenset({"balcony", "equipment_platform"})
+
 Source = Literal["cv", "vlm", "cv+vlm"]
 
 EXTERIOR = "exterior"  # beyond the building envelope

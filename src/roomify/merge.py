@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from roomify.rooms import CVRoom
-from roomify.schema import ParseWarning, Scale, Unresolved
+from roomify.schema import OUTDOOR_ROOM_TYPES, ParseWarning, Scale, Unresolved
 from roomify.vlm import ChainRead, OpeningsRead, RoomRead
 from roomify.walls import WallExtraction
 
@@ -606,10 +606,22 @@ _FREE_STANDING = {"stair", "railing", "elevator", "escalator",
                   "equipment_platform", "column", "chimney", "unknown_symbol"}
 
 
+def _both_sides_indoor(
+    connects: tuple[int | str, int | str], rooms: list[RoomDraft]
+) -> bool:
+    return all(
+        isinstance(side, int)
+        and side < len(rooms)
+        and rooms[side].room_type not in OUTDOOR_ROOM_TYPES
+        for side in connects
+    )
+
+
 def merge_openings(
     candidates: list[OpeningCandidate],
     read: OpeningsRead | None,
     image_shape: tuple[int, int],
+    rooms: list[RoomDraft] | None = None,
 ) -> tuple[list[OpeningDraft], list[ElementDraft], list[ParseWarning], list[Unresolved]]:
     drafts: list[OpeningDraft] = []
     elements: list[ElementDraft] = []
@@ -622,12 +634,13 @@ def merge_openings(
         if entry is None:
             element_type = "window" if cand.kind_hint == "window" else "unknown_symbol"
             source, confidence, raw_text = "cv", 0.35, None
-            unresolved.append(
-                Unresolved(
-                    path=f"openings/{cand.marker}/element_type",
-                    reason="no VLM classification for this opening",
+            if cand.arc is None:  # an arc classifies it below; nothing unresolved
+                unresolved.append(
+                    Unresolved(
+                        path=f"openings/{cand.marker}/element_type",
+                        reason="no VLM classification for this opening",
+                    )
                 )
-            )
         elif not entry.is_real:
             warnings.append(
                 ParseWarning(
@@ -648,21 +661,42 @@ def merge_openings(
             # one, and the arc is measured from pixels at leaf scale while
             # the class is a reading of a small crop. The drawing wins.
             if element_type not in _SWINGING:
-                warnings.append(
-                    ParseWarning(
-                        code="opening_reclassified_by_arc",
-                        message=(
-                            f"candidate {cand.marker} was read as {element_type} but the "
-                            "plan draws a door-leaf swing sector at its jamb; "
-                            "reclassified single_door"
-                        ),
-                        ref=cand.marker,
+                if source != "cv":  # a disagreement, not merely a CV-only read
+                    warnings.append(
+                        ParseWarning(
+                            code="opening_reclassified_by_arc",
+                            message=(
+                                f"candidate {cand.marker} was read as {element_type} but "
+                                "the plan draws a door-leaf swing sector at its jamb; "
+                                "reclassified single_door"
+                            ),
+                            ref=cand.marker,
+                        )
                     )
-                )
                 element_type = "single_door"
-                confidence = min(confidence, 0.7)
+                confidence = min(confidence, 0.7) if source != "cv" else 0.5
             swing, hinge = cand.arc.swing, cand.arc.hinge
-        elif element_type in _SWINGING:
+        # A sliding door and a sliding window are the SAME drawn symbol —
+        # parallel overlapping leaves — so only adjacency separates them, and
+        # between two indoor rooms there is no exterior for a window to face.
+        # The prompt says so; this makes it hold (a 1.5m 客厅↔门厅 sliding
+        # door came back as sliding_window at 0.9 confidence).
+        if element_type == "sliding_window" and _both_sides_indoor(
+            cand.connects, rooms or []
+        ):
+            warnings.append(
+                ParseWarning(
+                    code="opening_reclassified_by_adjacency",
+                    message=(
+                        f"candidate {cand.marker} was read as sliding_window but both "
+                        "sides are indoor rooms; reclassified sliding_door"
+                    ),
+                    ref=cand.marker,
+                )
+            )
+            element_type = "sliding_door"
+            confidence = min(confidence, 0.7)
+        if element_type in _SWINGING and cand.arc is None:
             unresolved.append(
                 Unresolved(
                     path=f"openings/{cand.marker}/swing",

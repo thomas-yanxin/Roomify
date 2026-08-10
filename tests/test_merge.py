@@ -449,3 +449,58 @@ def test_drawn_swing_sector_overrules_a_window_reading():
     assert draft.swing == "clockwise"
     assert draft.confidence == pytest.approx(0.95)
     assert warnings == []
+
+
+def test_sliding_window_between_indoor_rooms_is_a_sliding_door():
+    """Same symbol, different name: only adjacency separates the two.
+
+    A sliding door and a sliding window are both drawn as parallel
+    overlapping leaves, so the reading flips on the plan's least legible
+    detail. Two indoor rooms have no exterior between them.
+    """
+    from dataclasses import dataclass
+
+    from roomify.merge import merge_openings
+    from roomify.vlm import OpeningsRead
+
+    @dataclass
+    class _Cand:
+        marker: str = "A"
+        bbox: tuple = (100.0, 200.0, 160.0, 210.0)
+        center: tuple = (130.0, 205.0)
+        axis: str = "h"
+        width_px: float = 60.0
+        kind_hint: str = "window"
+        connects: tuple = (0, 1)
+        wall_index: int = 0
+        arc: object = None
+
+    read = OpeningsRead.model_validate(
+        {
+            "candidates": [
+                {"marker": "A", "element_type": "sliding_window", "raw_text": None,
+                 "confidence": 0.9, "is_real": True}
+            ],
+            "extra_elements": [],
+        }
+    )
+
+    indoor = [_draft(1000.0, None, name="客厅"), _draft(1000.0, None, name="门厅")]
+    for room in indoor:
+        room.room_type = "living_room"
+    drafts, _, warnings, _ = merge_openings([_Cand()], read, (1000, 1000), indoor)
+    assert drafts[0].element_type == "sliding_door"
+    assert [w.code for w in warnings] == ["opening_reclassified_by_adjacency"]
+
+    # onto a balcony, or onto the exterior, the reading stands
+    outdoor = [indoor[0], _draft(1000.0, None, name="阳台")]
+    outdoor[1].room_type = "balcony"
+    drafts, _, warnings, _ = merge_openings([_Cand()], read, (1000, 1000), outdoor)
+    assert drafts[0].element_type == "sliding_window"
+    assert warnings == []
+
+    drafts, _, warnings, _ = merge_openings(
+        [_Cand(connects=(0, "exterior"))], read, (1000, 1000), indoor
+    )
+    assert drafts[0].element_type == "sliding_window"
+    assert warnings == []

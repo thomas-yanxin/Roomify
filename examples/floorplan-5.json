@@ -392,7 +392,7 @@
       "area_deviation": -0.47748159396541645,
       "area_deviation_flag": true,
       "source": "cv+vlm",
-      "confidence": 0.85
+      "confidence": 0.95
     },
     {
       "id": "room_3",
@@ -660,7 +660,7 @@
       "area_deviation": -0.8925704646539029,
       "area_deviation_flag": true,
       "source": "cv+vlm",
-      "confidence": 0.98
+      "confidence": 0.95
     }
   ],
   "walls": [
@@ -1460,7 +1460,7 @@
     },
     {
       "id": "op_4",
-      "element_type": "sliding_door",
+      "element_type": "single_door",
       "raw_text": null,
       "bbox_px": {
         "x0": 318.0,
@@ -1516,7 +1516,7 @@
       "protrusion_polygon_px": null,
       "protrusion_polygon_mm": null,
       "source": "cv+vlm",
-      "confidence": 0.95
+      "confidence": 0.85
     },
     {
       "id": "op_6",
@@ -1649,7 +1649,7 @@
     },
     {
       "id": "op_10",
-      "element_type": "floor_to_ceiling_window",
+      "element_type": "window",
       "raw_text": null,
       "bbox_px": {
         "x0": 103.0,
@@ -1663,8 +1663,8 @@
       },
       "width_px": 133.0,
       "width_mm": 2337.172727272727,
-      "sill_height_mm": 0.0,
-      "height_mm": 2800.0,
+      "sill_height_mm": 900.0,
+      "height_mm": 1500.0,
       "wall_id": "wall_4",
       "connects": [
         "room_1",
@@ -1675,21 +1675,21 @@
       "protrusion_polygon_px": null,
       "protrusion_polygon_mm": null,
       "source": "cv+vlm",
-      "confidence": 0.9
+      "confidence": 0.95
     }
   ],
   "elements": [
     {
       "id": "el_1",
-      "element_type": "window",
+      "element_type": "floor_to_ceiling_window",
       "raw_text": null,
       "bbox_px": {
-        "x0": 408.456,
-        "y0": 395.064,
-        "x1": 488.97600000000006,
-        "y1": 437.544
+        "x0": 463.356,
+        "y0": 448.164,
+        "x1": 574.62,
+        "y1": 484.27200000000005
       },
-      "room_id": "room_2",
+      "room_id": null,
       "source": "vlm",
       "confidence": 0.5
     }
@@ -1722,7 +1722,7 @@
     },
     {
       "code": "opening_geometry_is_bbox",
-      "message": "a window was found only by the VLM; it is reported under elements with approximate bounding-box geometry",
+      "message": "a floor_to_ceiling_window was found only by the VLM; it is reported under elements with approximate bounding-box geometry",
       "ref": null
     },
     {
@@ -1741,7 +1741,12 @@
       "ref": "room_5"
     }
   ],
-  "unresolved": [],
+  "unresolved": [
+    {
+      "path": "openings/op_4/swing",
+      "reason": "no swing-arc evidence in the image"
+    }
+  ],
   "nodes": {
     "site_roomify": {
       "object": "node",
@@ -2144,7 +2149,7 @@
               "area_deviation": -0.47748159396541645,
               "area_deviation_flag": true,
               "source": "cv+vlm",
-              "confidence": 0.85
+              "confidence": 0.95
             },
             {
               "id": "room_3",
@@ -2412,7 +2417,7 @@
               "area_deviation": -0.8925704646539029,
               "area_deviation_flag": true,
               "source": "cv+vlm",
-              "confidence": 0.98
+              "confidence": 0.95
             }
           ],
           "walls": [
@@ -3212,7 +3217,7 @@
             },
             {
               "id": "op_4",
-              "element_type": "sliding_door",
+              "element_type": "single_door",
               "raw_text": null,
               "bbox_px": {
                 "x0": 318.0,
@@ -3268,7 +3273,7 @@
               "protrusion_polygon_px": null,
               "protrusion_polygon_mm": null,
               "source": "cv+vlm",
-              "confidence": 0.95
+              "confidence": 0.85
             },
             {
               "id": "op_6",
@@ -3401,7 +3406,7 @@
             },
             {
               "id": "op_10",
-              "element_type": "floor_to_ceiling_window",
+              "element_type": "window",
               "raw_text": null,
               "bbox_px": {
                 "x0": 103.0,
@@ -3415,8 +3420,8 @@
               },
               "width_px": 133.0,
               "width_mm": 2337.172727272727,
-              "sill_height_mm": 0.0,
-              "height_mm": 2800.0,
+              "sill_height_mm": 900.0,
+              "height_mm": 1500.0,
               "wall_id": "wall_4",
               "connects": [
                 "room_1",
@@ -3427,21 +3432,21 @@
               "protrusion_polygon_px": null,
               "protrusion_polygon_mm": null,
               "source": "cv+vlm",
-              "confidence": 0.9
+              "confidence": 0.95
             }
           ],
           "elements": [
             {
               "id": "el_1",
-              "element_type": "window",
+              "element_type": "floor_to_ceiling_window",
               "raw_text": null,
               "bbox_px": {
-                "x0": 408.456,
-                "y0": 395.064,
-                "x1": 488.97600000000006,
-                "y1": 437.544
+                "x0": 463.356,
+                "y0": 448.164,
+                "x1": 574.62,
+                "y1": 484.27200000000005
               },
-              "room_id": "room_2",
+              "room_id": null,
               "source": "vlm",
               "confidence": 0.5
             }
@@ -3474,7 +3479,7 @@
             },
             {
               "code": "opening_geometry_is_bbox",
-              "message": "a window was found only by the VLM; it is reported under elements with approximate bounding-box geometry",
+              "message": "a floor_to_ceiling_window was found only by the VLM; it is reported under elements with approximate bounding-box geometry",
               "ref": null
             },
             {
@@ -3493,7 +3498,12 @@
               "ref": "room_5"
             }
           ],
-          "unresolved": []
+          "unresolved": [
+            {
+              "path": "openings/op_4/swing",
+              "reason": "no swing-arc evidence in the image"
+            }
+          ]
         }
       },
       "name": "floorplan-5",
@@ -4406,7 +4416,7 @@
       "metadata": {
         "roomifyId": "op_4"
       },
-      "doorType": "sliding",
+      "doorType": "hinged",
       "leafCount": 1,
       "openingKind": "door",
       "hingesSide": "left",
@@ -4577,10 +4587,10 @@
         "roomifyId": "op_10"
       },
       "windowType": "fixed",
-      "sill": false,
+      "sill": true,
       "position": [
         1.3003818181818183,
-        1.4,
+        1.65,
         0
       ],
       "rotation": [
@@ -4590,7 +4600,7 @@
       ],
       "wallId": "wall_4",
       "width": 2.337172727272727,
-      "height": 2.8
+      "height": 1.5
     },
     "zone_room_1": {
       "object": "node",

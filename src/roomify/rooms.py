@@ -115,6 +115,11 @@ def _thin_additions(added: np.ndarray, max_width: float) -> np.ndarray:
     Thickness = twice the largest inscribed radius (the distance transform's
     peak, padded so the border does not truncate it) — exact for strips and
     unfooled by a long thin wedge.
+
+    ponytail: a shallow corner chord thinner than a wall still gets through
+    (small kernels on high-res inputs). It costs a sliver, not a room; gate
+    on the added region's ORIENTATION against the family angle if a corpus
+    ever needs more.
     """
     n, labels, stats, _ = cv2.connectedComponentsWithStats(added, connectivity=8)
     keep = np.zeros(n, dtype=bool)

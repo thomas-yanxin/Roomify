@@ -840,8 +840,8 @@
         1876.2612215418867,
         1479.7021396251719
       ],
-      "printed_area_sqm": 2.88,
-      "area_deviation": -0.059571511678096274,
+      "printed_area_sqm": 2.74,
+      "area_deviation": -0.011520421033911528,
       "area_deviation_flag": false,
       "source": "cv+vlm",
       "confidence": 0.95
@@ -2542,7 +2542,7 @@
       "protrusion_polygon_px": null,
       "protrusion_polygon_mm": null,
       "source": "cv+vlm",
-      "confidence": 0.85
+      "confidence": 0.9
     },
     {
       "id": "op_14",
@@ -2572,7 +2572,7 @@
       "protrusion_polygon_px": null,
       "protrusion_polygon_mm": null,
       "source": "cv+vlm",
-      "confidence": 0.85
+      "confidence": 0.9
     },
     {
       "id": "op_15",
@@ -2602,7 +2602,7 @@
       "protrusion_polygon_px": null,
       "protrusion_polygon_mm": null,
       "source": "cv+vlm",
-      "confidence": 0.8
+      "confidence": 0.85
     },
     {
       "id": "op_16",
@@ -2698,15 +2698,15 @@
   "elements": [
     {
       "id": "el_1",
-      "element_type": "window",
+      "element_type": "single_door",
       "raw_text": null,
       "bbox_px": {
-        "x0": 531.65,
-        "y0": 285.93,
-        "x1": 565.9499999999999,
-        "y1": 300.05
+        "x0": 465.108,
+        "y0": 365.708,
+        "x1": 499.40799999999996,
+        "y1": 379.82800000000003
       },
-      "room_id": "room_7",
+      "room_id": "room_1",
       "source": "vlm",
       "confidence": 0.5
     },
@@ -2715,12 +2715,12 @@
       "element_type": "window",
       "raw_text": null,
       "bbox_px": {
-        "x0": 373.87,
-        "y0": 384.77000000000004,
-        "x1": 408.16999999999996,
-        "y1": 398.89
+        "x0": 437.668,
+        "y0": 535.148,
+        "x1": 506.268,
+        "y1": 549.268
       },
-      "room_id": "room_1",
+      "room_id": "room_3",
       "source": "vlm",
       "confidence": 0.5
     },
@@ -2729,12 +2729,26 @@
       "element_type": "window",
       "raw_text": null,
       "bbox_px": {
-        "x0": 442.47,
-        "y0": 533.03,
-        "x1": 517.93,
-        "y1": 547.15
+        "x0": 437.668,
+        "y0": 612.808,
+        "x1": 506.268,
+        "y1": 626.928
       },
       "room_id": "room_3",
+      "source": "vlm",
+      "confidence": 0.5
+    },
+    {
+      "id": "el_4",
+      "element_type": "window",
+      "raw_text": null,
+      "bbox_px": {
+        "x0": 218.148,
+        "y0": 535.148,
+        "x1": 279.888,
+        "y1": 549.268
+      },
+      "room_id": null,
       "source": "vlm",
       "confidence": 0.5
     }
@@ -2743,6 +2757,11 @@
     {
       "code": "room_gap_fallback",
       "message": "rooms sealed with composite (thin seal strokes absent)",
+      "ref": null
+    },
+    {
+      "code": "opening_geometry_is_bbox",
+      "message": "a single_door was found only by the VLM; it is reported under elements with approximate bounding-box geometry",
       "ref": null
     },
     {
@@ -3646,8 +3665,8 @@
                 1876.2612215418867,
                 1479.7021396251719
               ],
-              "printed_area_sqm": 2.88,
-              "area_deviation": -0.059571511678096274,
+              "printed_area_sqm": 2.74,
+              "area_deviation": -0.011520421033911528,
               "area_deviation_flag": false,
               "source": "cv+vlm",
               "confidence": 0.95
@@ -5348,7 +5367,7 @@
               "protrusion_polygon_px": null,
               "protrusion_polygon_mm": null,
               "source": "cv+vlm",
-              "confidence": 0.85
+              "confidence": 0.9
             },
             {
               "id": "op_14",
@@ -5378,7 +5397,7 @@
               "protrusion_polygon_px": null,
               "protrusion_polygon_mm": null,
               "source": "cv+vlm",
-              "confidence": 0.85
+              "confidence": 0.9
             },
             {
               "id": "op_15",
@@ -5408,7 +5427,7 @@
               "protrusion_polygon_px": null,
               "protrusion_polygon_mm": null,
               "source": "cv+vlm",
-              "confidence": 0.8
+              "confidence": 0.85
             },
             {
               "id": "op_16",
@@ -5504,15 +5523,15 @@
           "elements": [
             {
               "id": "el_1",
-              "element_type": "window",
+              "element_type": "single_door",
               "raw_text": null,
               "bbox_px": {
-                "x0": 531.65,
-                "y0": 285.93,
-                "x1": 565.9499999999999,
-                "y1": 300.05
+                "x0": 465.108,
+                "y0": 365.708,
+                "x1": 499.40799999999996,
+                "y1": 379.82800000000003
               },
-              "room_id": "room_7",
+              "room_id": "room_1",
               "source": "vlm",
               "confidence": 0.5
             },
@@ -5521,12 +5540,12 @@
               "element_type": "window",
               "raw_text": null,
               "bbox_px": {
-                "x0": 373.87,
-                "y0": 384.77000000000004,
-                "x1": 408.16999999999996,
-                "y1": 398.89
+                "x0": 437.668,
+                "y0": 535.148,
+                "x1": 506.268,
+                "y1": 549.268
               },
-              "room_id": "room_1",
+              "room_id": "room_3",
               "source": "vlm",
               "confidence": 0.5
             },
@@ -5535,12 +5554,26 @@
               "element_type": "window",
               "raw_text": null,
               "bbox_px": {
-                "x0": 442.47,
-                "y0": 533.03,
-                "x1": 517.93,
-                "y1": 547.15
+                "x0": 437.668,
+                "y0": 612.808,
+                "x1": 506.268,
+                "y1": 626.928
               },
               "room_id": "room_3",
+              "source": "vlm",
+              "confidence": 0.5
+            },
+            {
+              "id": "el_4",
+              "element_type": "window",
+              "raw_text": null,
+              "bbox_px": {
+                "x0": 218.148,
+                "y0": 535.148,
+                "x1": 279.888,
+                "y1": 549.268
+              },
+              "room_id": null,
               "source": "vlm",
               "confidence": 0.5
             }
@@ -5549,6 +5582,11 @@
             {
               "code": "room_gap_fallback",
               "message": "rooms sealed with composite (thin seal strokes absent)",
+              "ref": null
+            },
+            {
+              "code": "opening_geometry_is_bbox",
+              "message": "a single_door was found only by the VLM; it is reported under elements with approximate bounding-box geometry",
               "ref": null
             },
             {

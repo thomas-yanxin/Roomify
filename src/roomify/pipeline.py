@@ -37,6 +37,7 @@ from roomify.schema import (
     DEFAULT_LEVEL_HEIGHT_MM,
     DEFAULT_WINDOW_HEIGHT_MM,
     DEFAULT_WINDOW_SILL_HEIGHT_MM,
+    OUTDOOR_ROOM_TYPES,
     BBox,
     Element,
     FloorPlan,
@@ -304,7 +305,7 @@ def parse(
         executor.shutdown(wait=False)
 
     opening_drafts, element_drafts, op_warnings, op_unresolved = merge_openings(
-        candidates, openings_read, work_bgr.shape[:2]
+        candidates, openings_read, work_bgr.shape[:2], rooms
     )
     warnings += op_warnings
     unresolved += op_unresolved
@@ -368,19 +369,17 @@ def _opening_context(
     break connects and its measured width. Adjacency is invisible in a tight
     crop but is the strongest classification prior available."""
 
-    # Balconies, terraces and AC platforms are OUTDOOR spaces the plan draws
-    # inside the footprint. Calling them "interior room" made the strongest
-    # prior in the openings prompt ("interior↔interior is a door") both wrong
-    # for them and untrustworthy everywhere else — a bedroom's glazed balcony
-    # wall really is a window, and the model that has to overrule the hint
-    # there stops honouring it at a bathroom door.
-    outdoor = {"balcony", "equipment_platform"}  # the RoomType vocabulary's only two
-
     def side_label(side: int | str) -> str:
+        # Balconies and AC platforms are OUTDOOR spaces the plan draws inside
+        # the footprint. Calling them "interior room" made the strongest prior
+        # in the openings prompt ("interior↔interior is a door") both wrong
+        # for them and untrustworthy everywhere else — a bedroom's glazed
+        # balcony wall really is a window, and a model that has to overrule
+        # the hint there stops honouring it at a bathroom door.
         if isinstance(side, int):
             room = rooms[side]
             label = room.name or room.room_type
-            if room.room_type in outdoor:
+            if room.room_type in OUTDOOR_ROOM_TYPES:
                 return (
                     f"{label} (an OUTDOOR space, not an interior room: it is "
                     "entered through a door — often sliding — and glazed "
