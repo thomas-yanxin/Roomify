@@ -396,3 +396,56 @@ def test_reconcile_chooses_closest_fragment_sum():
 
     assert "2" in markers  # 85% pair left alone
     assert "3" not in markers  # exact 100% pair merged with marker 1
+
+
+def test_drawn_swing_sector_overrules_a_window_reading():
+    """Pixel evidence owns swing — and therefore owns "is this a door".
+
+    The reference endpoint reads door-width breaks with a plainly drawn
+    quarter-disc as "window" with 0.95 confidence (7 cases on the corpus).
+    A window has no leaf sweeping the floor, so the drawing wins.
+    """
+    from dataclasses import dataclass
+
+    from roomify.merge import merge_openings
+    from roomify.openings import ArcEvidence
+    from roomify.vlm import OpeningsRead
+
+    @dataclass
+    class _Cand:
+        marker: str = "A"
+        bbox: tuple = (100.0, 200.0, 160.0, 210.0)
+        center: tuple = (130.0, 205.0)
+        axis: str = "h"
+        width_px: float = 60.0
+        kind_hint: str = "doorlike"
+        connects: tuple = (0, 1)
+        wall_index: int = 0
+        arc: object = ArcEvidence(hinge=(100.0, 205.0), swing="clockwise", opens_into=1)
+
+    def classified(element_type: str):
+        read = OpeningsRead.model_validate(
+            {
+                "candidates": [
+                    {"marker": "A", "element_type": element_type, "raw_text": None,
+                     "confidence": 0.95, "is_real": True}
+                ],
+                "extra_elements": [],
+            }
+        )
+        drafts, _, warnings, _ = merge_openings([_Cand()], read, (1000, 1000))
+        return drafts[0], warnings
+
+    for wrong in ("window", "sliding_door", "passage"):
+        draft, warnings = classified(wrong)
+        assert draft.element_type == "single_door", wrong
+        assert draft.swing == "clockwise" and draft.hinge == (100.0, 205.0)
+        assert draft.confidence <= 0.7
+        assert [w.code for w in warnings] == ["opening_reclassified_by_arc"]
+
+    # a reading that already agrees keeps its own (finer) type and confidence
+    draft, warnings = classified("double_door")
+    assert draft.element_type == "double_door"
+    assert draft.swing == "clockwise"
+    assert draft.confidence == pytest.approx(0.95)
+    assert warnings == []

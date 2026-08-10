@@ -197,3 +197,27 @@ def test_short_diagonal_stubs_are_not_walls(simple_plan):
         dy = abs(seg.end[1] - seg.start[1])
         if min(dx, dy) > 0.09 * max(dx, dy):  # diagonal
             assert float(np.hypot(dx, dy)) >= 2.5 * wx.thickness_px
+
+
+def test_no_swing_sector_is_read_at_more_than_a_leaf_width():
+    """A quarter-disc's radius IS the leaf: 2m+ mouths have no swing.
+
+    Wide balcony and corridor mouths sit on a floor-tint boundary, which
+    reads as a tinted sector and used to promote them to swinging doors.
+    """
+    img = blank()
+    draw_wall_rect(img, 100, 100, 500, 400, thickness=10)
+    cv2.line(img, (300, 100), (300, 400), (WALL_GREY,) * 3, 8)
+    draw_gap(img, 294, 150, 306, 300)  # 150px mouth = 3.75m at door_px=40
+    draw_sill(img, 296, 150, 296, 300)
+    draw_sill(img, 304, 150, 304, 300)
+    cv2.rectangle(img, (110, 110), (290, 390), (168, 196, 216), -1)
+    cv2.ellipse(img, (296, 300), (150, 150), 0, 180, 270, (215, 235, 245), -1)
+    wx, drafts = _drafts(img)
+    cands, _ = find_openings(wx, drafts, img, door_px=40)
+    mouth = [c for c in cands if set(c.connects) == {0, 1}]
+    assert len(mouth) == 1
+    assert mouth[0].width_px > 100
+    assert mouth[0].arc is None
+    # (the same tinted sector at leaf scale still yields a swing —
+    # test_tinted_sector_yields_swing)

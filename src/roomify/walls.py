@@ -526,7 +526,16 @@ def _stroke_binary(
     gray: np.ndarray, footprint: tuple[int, int, int, int] | None
 ) -> np.ndarray:
     """Adaptive-threshold stroke binary, gated to the wall footprint (drops
-    the dimension chains and margin annotations living outside it)."""
+    the dimension chains and margin annotations living outside it) and
+    cleared of dot-hatch FIELDS (bathroom/tile floor texture).
+
+    Dot hatch is floor decoration, never structure — the same principle
+    that keeps light fills out of the wall bands. A dot is a small roundish
+    blob; a FIELD is many of them packed together. Isolated small marks
+    (dimension ticks) and dashed zone dividers survive: a dashed LINE
+    through the density window covers ~3% of it, a hatch field 8%+.
+    Derotation resampling can smear dots to 5-8px, hence the 8px cap.
+    """
     binary = cv2.adaptiveThreshold(
         gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 51, 10
     )
@@ -538,6 +547,29 @@ def _stroke_binary(
             max(0, y0 - pad) : y1 + 1 + pad, max(0, x0 - pad) : x1 + 1 + pad
         ]
         binary = gated
+
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(binary, connectivity=8)
+    if n > 1:
+        long_side = np.maximum(stats[:, 2], stats[:, 3])
+        short_side = np.maximum(np.minimum(stats[:, 2], stats[:, 3]), 1)
+        # dots are ROUND (hatch marks, resampling smears); dash SEGMENTS are
+        # elongated and must survive even inside grain-speckled areas — a
+        # zone divider running between two wood floors is exactly that case
+        roundish = long_side < 2 * short_side
+        tiny = (long_side <= 4) & roundish  # hatch marks, 2x2 divider dots
+        smear = (long_side > 4) & (long_side <= 8) & roundish  # rotation blur
+        tiny[0] = smear[0] = False
+        dots = np.where((tiny | smear)[labels], np.float32(1.0), np.float32(0.0))
+        density = cv2.boxFilter(dots, -1, (31, 31), normalize=True)
+        # Size-tiered density floors: true hatch fields run 0.15-0.25, while
+        # grain speckle WITH a dashed divider embedded runs ~0.08 and its
+        # tiny marks must survive. 5-7px round smears exist only as hatch
+        # blurred by derotation resampling (~0.08-0.10) — no legitimate
+        # drawing uses them, so their floor is low.
+        field = ((density >= 0.12) & tiny[labels] & (dots > 0)) | (
+            (density >= 0.05) & smear[labels] & (dots > 0)
+        )
+        binary = np.where(field, np.uint8(0), binary)
     return binary
 
 

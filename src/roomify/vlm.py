@@ -623,13 +623,31 @@ def plan_read_prompt() -> str:
     )
 
 
-def room_semantics_prompt(n_rooms: int) -> str:
+def room_semantics_prompt(n_rooms: int, area_shares: dict[str, float] | None = None) -> str:
+    """``area_shares`` maps marker → its measured share of the total detected
+    floor area. The model matches labels to markers visually and fumbles once
+    fragments multiply; the measured sizes are exact and pin the pairing —
+    a printed 43.8㎡ label cannot belong to a marker holding 4% of the floor.
+    """
     types = ", ".join(f'"{t}"' for t in _ROOM_TYPES)
+    share_block = ""
+    if area_shares:
+        ranked = sorted(area_shares.items(), key=lambda kv: -kv[1])
+        lines = "\n".join(f"  marker {m}: {share:.1%} of the total floor area"
+                          for m, share in ranked)
+        share_block = (
+            "\nCV-measured RELATIVE sizes of the marked regions (exact, from the "
+            "detected geometry) — use them to keep label↔marker pairing "
+            "consistent; a printed area that contradicts a marker's relative "
+            "size almost certainly belongs to a different marker:\n"
+            f"{lines}\n"
+        )
     return (
         f"This floor plan image carries {n_rooms} numbered yellow circular markers "
         f"(numbers 1 to {n_rooms}). Each marker sits slightly ABOVE the center of one "
         "automatically detected room region, so the room's own label text is usually just "
         "below the marker.\n"
+        f"{share_block}"
         "For EACH marker number report:\n"
         '- "name": the room label text printed in that room, exactly as written (e.g. "卧室", '
         '"客厅") — do not translate; null if the room has no text label.\n'

@@ -19,6 +19,7 @@ from roomify import debug as debug_mod
 from roomify.io import SourceImage, derotate, load
 from roomify.merge import (
     DEVIATION_FLAG_THRESHOLD,
+    MIN_ROOM_SQM,
     ElementDraft,
     OpeningDraft,
     RoomDraft,
@@ -170,8 +171,12 @@ def parse(
         import cv2
 
         upscaled = cv2.resize(overlay, None, fx=1.5, fy=1.5, interpolation=cv2.INTER_CUBIC)
+        total_area = sum(r.area_px for r in detection.rooms) or 1.0
+        shares = {
+            str(i + 1): r.area_px / total_area for i, r in enumerate(detection.rooms)
+        }
         room_read = client.call(
-            room_semantics_prompt(len(detection.rooms)),
+            room_semantics_prompt(len(detection.rooms), shares),
             [upscaled],
             RoomRead,
             wire_schema=ROOMS_WIRE,
@@ -363,10 +368,24 @@ def _opening_context(
     break connects and its measured width. Adjacency is invisible in a tight
     crop but is the strongest classification prior available."""
 
+    # Balconies, terraces and AC platforms are OUTDOOR spaces the plan draws
+    # inside the footprint. Calling them "interior room" made the strongest
+    # prior in the openings prompt ("interior↔interior is a door") both wrong
+    # for them and untrustworthy everywhere else — a bedroom's glazed balcony
+    # wall really is a window, and the model that has to overrule the hint
+    # there stops honouring it at a bathroom door.
+    outdoor = {"balcony", "equipment_platform"}  # the RoomType vocabulary's only two
+
     def side_label(side: int | str) -> str:
         if isinstance(side, int):
             room = rooms[side]
             label = room.name or room.room_type
+            if room.room_type in outdoor:
+                return (
+                    f"{label} (an OUTDOOR space, not an interior room: it is "
+                    "entered through a door — often sliding — and glazed "
+                    "elsewhere)"
+                )
             return f"{label} (interior room)"
         if side == "exterior":
             return "the exterior"
@@ -473,6 +492,16 @@ def _assemble(
 
     schema_rooms: list[Room] = []
     for i, draft in enumerate(rooms):
+        if draft.recovered:
+            warnings.append(
+                ParseWarning(
+                    code="room_recovered",
+                    message="room reclaimed from floor space no sealing candidate "
+                    "resolved (decor strokes had chopped it); boundary follows "
+                    "the surrounding structure",
+                    ref=room_ids[i],
+                )
+            )
         if draft.zone_bounded:
             warnings.append(
                 ParseWarning(
@@ -506,8 +535,25 @@ def _assemble(
                 / 1e6
             )
             if draft.printed_area_sqm:
-                deviation = (area_sqm - draft.printed_area_sqm) / draft.printed_area_sqm
-                flag = abs(deviation) > DEVIATION_FLAG_THRESHOLD
+                if draft.printed_area_sqm < MIN_ROOM_SQM:
+                    # 0.01㎡ duct labels state the DUCT's area; the smallest
+                    # void CV can resolve is orders of magnitude larger, so a
+                    # percentage against such a label is a category error,
+                    # not a measurement verdict.
+                    warnings.append(
+                        ParseWarning(
+                            code="printed_area_below_resolution",
+                            message=(
+                                f"printed area {draft.printed_area_sqm}㎡ is below "
+                                "the CV measurement resolution; deviation not "
+                                "comparable"
+                            ),
+                            ref=room_ids[i],
+                        )
+                    )
+                else:
+                    deviation = (area_sqm - draft.printed_area_sqm) / draft.printed_area_sqm
+                    flag = abs(deviation) > DEVIATION_FLAG_THRESHOLD
 
         schema_rooms.append(
             Room(

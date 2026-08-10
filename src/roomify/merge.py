@@ -59,6 +59,7 @@ class RoomDraft:
     printed_area_sqm: float | None = None
     marker: str | None = None  # overlay marker id, for warnings/debug
     zone_bounded: bool = False  # boundary includes a dashed zone divider
+    recovered: bool = False  # reclaimed from uncovered floor space
 
 
 @dataclass
@@ -120,6 +121,7 @@ def merge_rooms(
             confidence=0.3,
             marker=marker,
             zone_bounded=cv_room.zone_bounded,
+            recovered=cv_room.recovered,
         )
         if entry is None:
             if read is not None:
@@ -641,19 +643,25 @@ def merge_openings(
 
         swing = hinge = None
         if cand.arc is not None:
-            if element_type in _SWINGING or element_type == "unknown_symbol":
-                swing, hinge = cand.arc.swing, cand.arc.hinge
-            else:
+            # A drawn quarter-disc at a jamb is a door leaf sweeping the
+            # floor: windows, sliding leaves and plain passages do not have
+            # one, and the arc is measured from pixels at leaf scale while
+            # the class is a reading of a small crop. The drawing wins.
+            if element_type not in _SWINGING:
                 warnings.append(
                     ParseWarning(
-                        code="arc_evidence_conflict",
+                        code="opening_reclassified_by_arc",
                         message=(
-                            f"swing-arc pixels found at {cand.marker} but it was classified "
-                            f"{element_type}; swing not reported"
+                            f"candidate {cand.marker} was read as {element_type} but the "
+                            "plan draws a door-leaf swing sector at its jamb; "
+                            "reclassified single_door"
                         ),
                         ref=cand.marker,
                     )
                 )
+                element_type = "single_door"
+                confidence = min(confidence, 0.7)
+            swing, hinge = cand.arc.swing, cand.arc.hinge
         elif element_type in _SWINGING:
             unresolved.append(
                 Unresolved(

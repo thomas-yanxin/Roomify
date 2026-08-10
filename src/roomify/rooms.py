@@ -35,6 +35,10 @@ MAX_AREA_RATIO = 0.6  # of image; larger = the exterior leaked in
 FALLBACK_GAP_RATIOS = (0.02, 0.04, 0.06, 0.08, 0.10, 0.12)
 COLLINEAR_ANGLE_DEG = 8.0
 COLLINEAR_MIN_EDGE_RATIO = 0.02  # of perimeter
+# How much of a sub-void's boundary may sit off the drawn ink before its
+# split is judged invented rather than found (see _composite). One doorway
+# is ~3% of a room's perimeter; a close-fabricated divider costs 28-40%.
+DECOMPOSE_INK_SLACK = 0.15
 
 
 @dataclass(frozen=True)
@@ -48,6 +52,10 @@ class CVRoom:
     # physical wall (玄关/走廊 functional splits): geometry is measured, the
     # boundary evidence is weaker.
     zone_bounded: bool = False
+    # True when the room was recovered from floor space no candidate claimed
+    # (decor strokes — railings, wardrobe lines — had chopped it below the
+    # size filters). Real measured pixels, weaker segmentation evidence.
+    recovered: bool = False
 
 
 @dataclass(frozen=True)
@@ -56,7 +64,9 @@ class RoomDetection:
     strategy: str  # "close5" or "directional_close(<gap>px)"
 
 
-def _sealed(union: np.ndarray, angles: tuple[float, ...], close) -> np.ndarray:
+def _sealed(
+    union: np.ndarray, angles: tuple[float, ...], close, thickness_px: float
+) -> np.ndarray:
     """Apply a closing recipe axis-aligned AND in each rotated wall frame.
 
     Directional closes only bridge gaps along the axes; a diamond wing's
@@ -64,11 +74,20 @@ def _sealed(union: np.ndarray, angles: tuple[float, ...], close) -> np.ndarray:
     a frame where that family is axis-aligned and the result is unioned
     back. Nearest-neighbour warps keep the mask binary; the 1px jaggies
     they introduce are below the polygon simplification tolerance.
+
+    Only WALL-THIN additions are accepted from a rotated pass. In a rotated
+    frame the kernel bridges gaps along the family's walls (the intent) but
+    ALSO cuts a chord across every 90° corner it meets, filling the triangle
+    behind it — every room in the plan loses its corners, and the ones with
+    interior strokes fragment (measured: 23k px of a 700px plan, room areas
+    30-50% under their printed labels). A bridged wall gap is as thick as
+    the wall; a corner chord is half the kernel deep.
     """
     work = close(union)
     if not angles:
         return work
     h, w = union.shape
+    max_width = max(6.0, 2.5 * thickness_px)
     for angle in angles:
         m = cv2.getRotationMatrix2D((w / 2.0, h / 2.0), angle, 1.0)
         cos, sin = abs(m[0, 0]), abs(m[0, 1])
@@ -85,8 +104,27 @@ def _sealed(union: np.ndarray, angles: tuple[float, ...], close) -> np.ndarray:
             flags=cv2.INTER_NEAREST,
             borderValue=0,
         )
-        work = cv2.bitwise_or(work, closed_back)
+        added = cv2.bitwise_and(closed_back, cv2.bitwise_not(union))
+        work = cv2.bitwise_or(work, _thin_additions(added, max_width))
     return work
+
+
+def _thin_additions(added: np.ndarray, max_width: float) -> np.ndarray:
+    """Keep only components no thicker than ``max_width``.
+
+    Thickness = twice the largest inscribed radius (the distance transform's
+    peak, padded so the border does not truncate it) — exact for strips and
+    unfooled by a long thin wedge.
+    """
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(added, connectivity=8)
+    keep = np.zeros(n, dtype=bool)
+    for i in range(1, n):
+        x, y, bw, bh, _ = stats[i]
+        component = (labels[y : y + bh, x : x + bw] == i).astype(np.uint8)
+        padded = cv2.copyMakeBorder(component, 1, 1, 1, 1, cv2.BORDER_CONSTANT, value=0)
+        radius = float(cv2.distanceTransform(padded, cv2.DIST_L2, 5).max())
+        keep[i] = 2.0 * radius <= max_width
+    return np.where(keep[labels], np.uint8(255), np.uint8(0))
 
 
 def _building_area(
@@ -100,6 +138,13 @@ def _building_area(
     inserted into the enclosure mask: doing so would turn an open courtyard
     or deep exterior notch into invented room geometry.
     """
+    return _silhouette(union, footprint)[1]
+
+
+def _silhouette(
+    union: np.ndarray, footprint: tuple[int, int, int, int]
+) -> tuple[np.ndarray, float]:
+    """Filled building silhouette mask and its area."""
     x0, y0, x1, y1 = footprint
     # 0.2 of the footprint: must exceed the widest facade mouth (a double
     # entry door with its swing arcs spans ~0.15), while staying below deep
@@ -109,7 +154,9 @@ def _building_area(
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (gap, gap))
     blob = cv2.morphologyEx(union, cv2.MORPH_CLOSE, kernel)
     contours, _ = cv2.findContours(blob, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    return float(sum(cv2.contourArea(c) for c in contours))
+    mask = np.zeros_like(union)
+    cv2.drawContours(mask, contours, -1, 255, thickness=cv2.FILLED)
+    return mask, float(sum(cv2.contourArea(c) for c in contours))
 
 
 def detect_rooms(walls: WallExtraction, min_area_px: float | None = None) -> RoomDetection:
@@ -140,7 +187,10 @@ def detect_rooms(walls: WallExtraction, min_area_px: float | None = None) -> Roo
     candidates: list[RoomDetection] = []
     for base, hints, tag in variants:
         work = _sealed(
-            base, walls.angles, lambda m: cv2.morphologyEx(m, cv2.MORPH_CLOSE, kernel5)
+            base,
+            walls.angles,
+            lambda m: cv2.morphologyEx(m, cv2.MORPH_CLOSE, kernel5),
+            walls.thickness_px,
         )
         candidates.append(
             RoomDetection(
@@ -159,7 +209,7 @@ def detect_rooms(walls: WallExtraction, min_area_px: float | None = None) -> Roo
                     out, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (3, gap))
                 )
 
-            work = _sealed(base, walls.angles, directional)
+            work = _sealed(base, walls.angles, directional, walls.thickness_px)
             candidates.append(
                 RoomDetection(
                     rooms=_holes_to_rooms(work, walls, min_area_px, hints),
@@ -167,10 +217,83 @@ def detect_rooms(walls: WallExtraction, min_area_px: float | None = None) -> Roo
                 )
             )
 
-    return _composite(candidates, building_area)
+    detection = _composite(candidates, building_area, union)
+    recovered = _recover_uncovered(detection.rooms, walls, min_area_px)
+    if recovered:
+        rooms = sorted(detection.rooms + recovered, key=lambda r: -r.area_px)
+        detection = RoomDetection(rooms=rooms, strategy=detection.strategy)
+    return detection
 
 
-def _composite(candidates: list[RoomDetection], building_area: float) -> RoomDetection:
+def _recover_uncovered(
+    rooms: list[CVRoom], walls: WallExtraction, min_area_px: float
+) -> list[CVRoom]:
+    """Claim floor space that no candidate turned into a room.
+
+    Every patch of the building silhouette is either wall or floor, and
+    every floor patch belongs to some room — decor strokes (balcony
+    railings, wardrobe fronts) chop narrow rooms into slivers below the
+    size filters and the space simply vanishes. Recover it: take the
+    silhouette interior minus walls minus chosen rooms, absorb the decor
+    strokes with a small close, and keep patches that are room-sized AND
+    mostly bounded by real drawn structure (an exterior notch bridged by
+    the silhouette close is bounded by the hull, not by ink, and stays
+    out). Recovered rooms carry ``recovered=True`` — real measured pixels,
+    weaker segmentation evidence.
+    """
+    silhouette, _ = _silhouette(walls.union, walls.footprint)
+    interior = cv2.bitwise_and(
+        silhouette, cv2.bitwise_not(cv2.dilate(walls.union, np.ones((5, 5), np.uint8)))
+    )
+    # exterior veto: anything reachable from the image border through the
+    # (lightly sealed) mask is outside — an open courtyard's mouth carries
+    # no ink, so its interior floods from the border and must not be
+    # reclaimed, however wall-bounded its other three sides are
+    sealed = cv2.morphologyEx(
+        walls.union, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+    )
+    n_out, out_labels = cv2.connectedComponents(
+        (sealed == 0).astype(np.uint8), connectivity=4
+    )
+    border = np.unique(
+        np.concatenate(
+            [out_labels[0, :], out_labels[-1, :], out_labels[:, 0], out_labels[:, -1]]
+        )
+    )
+    exterior = np.isin(out_labels, border[border != 0])
+    interior = cv2.bitwise_and(
+        interior, cv2.bitwise_not(exterior.astype(np.uint8) * 255)
+    )
+    covered = np.zeros_like(silhouette)
+    for room in rooms:
+        cv2.fillPoly(covered, [np.round(room.polygon).astype(np.int32)], 255)
+    uncovered = cv2.bitwise_and(
+        interior, cv2.bitwise_not(cv2.dilate(covered, np.ones((7, 7), np.uint8)))
+    )
+    uncovered = cv2.morphologyEx(
+        uncovered, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (9, 9))
+    )
+
+    near_union = cv2.dilate(walls.union, np.ones((11, 11), np.uint8))
+    out: list[CVRoom] = []
+    contours, _ = cv2.findContours(uncovered, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    for contour in contours:
+        area = cv2.contourArea(contour)
+        if area < 2 * min_area_px:  # recovery earns no benefit of the doubt
+            continue
+        pts = contour.reshape(-1, 2)
+        on_ink = sum(1 for x, y in pts if near_union[int(y), int(x)])
+        if on_ink < 0.7 * len(pts):
+            continue  # bounded by the silhouette hull, not by drawn strokes
+        recovered_room = _polygonize(contour, walls.thickness_px)
+        if recovered_room is not None:
+            out.append(replace(recovered_room, recovered=True))
+    return out
+
+
+def _composite(
+    candidates: list[RoomDetection], building_area: float, union: np.ndarray
+) -> RoomDetection:
     """Per-void composition across all sealing candidates.
 
     One close size cannot serve every room: a dot-hatched bathroom only
@@ -224,12 +347,17 @@ def _composite(candidates: list[RoomDetection], building_area: float) -> RoomDet
 
     # Decompose merges the vote couldn't settle: when a chosen void is
     # explained by ≥2 significant unchosen sub-voids (each ≥80% inside it,
-    # jointly ≥70% of its area), the split IS the better reading — those
-    # pieces exist because some rung found real structure across the void.
+    # jointly ≥70% of its area), the split MAY be the better reading — but
+    # only if those pieces trace real structure rather than a divider a big
+    # close invented while bridging. Drawn ink settles it: splitting on a
+    # real wall or dashed divider costs a piece only the doorway it bridges
+    # (measured 0.97 vs a 1.00 parent), while an invented divider leaves a
+    # third to a half of the piece's boundary floating (0.60, 0.51).
+    # Without this a count-11 bedroom was shredded by count-2 artifacts.
     unchosen = [cl for cl in clusters if cl not in chosen]
     final: list[dict] = []
     for cl in chosen:
-        if cl["poly"].area < 0.15 * building_area:
+        if cl["poly"].area < 0.08 * building_area:
             # only merge-scale voids qualify — a small room's "sub-voids"
             # are texture accidents, not structure
             final.append(cl)
@@ -248,9 +376,12 @@ def _composite(candidates: list[RoomDetection], building_area: float) -> RoomDet
                 for q in placed
             ):
                 placed.append(p)
-        if len(placed) >= 2 and sum(
-            p["poly"].area for p in placed
-        ) >= 0.7 * cl["poly"].area:
+        if (
+            len(placed) >= 2
+            and sum(p["poly"].area for p in placed) >= 0.7 * cl["poly"].area
+            and max(_boundary_fraction(p["room"], union) for p in placed)
+            >= _boundary_fraction(cl["room"], union) - DECOMPOSE_INK_SLACK
+        ):
             final.extend(placed)
         else:
             final.append(cl)

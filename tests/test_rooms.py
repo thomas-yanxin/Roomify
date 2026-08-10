@@ -172,6 +172,17 @@ def test_dot_hatch_room_survives_composition():
     assert len(det.rooms) == 2, [r.area_px for r in det.rooms]
 
 
+def test_stroke_binary_removes_dense_eight_pixel_dot_field():
+    from roomify.walls import _stroke_binary
+
+    gray = np.full((180, 180), 255, np.uint8)
+    for y in range(20, 160, 14):
+        for x in range(20, 160, 14):
+            gray[y : y + 8, x : x + 8] = 0
+
+    assert not _stroke_binary(gray, (0, 0, 179, 179)).any()
+
+
 def test_composite_keeps_stable_parent_and_local_room():
     from roomify.rooms import CVRoom, RoomDetection, _composite
 
@@ -193,7 +204,11 @@ def test_composite_keeps_stable_parent_and_local_room():
     candidates += [RoomDetection([parent], f"close{i}") for i in range(5)]
     candidates.append(RoomDetection([left, right], "one-off-split"))
 
-    result = _composite(candidates, building_area=100_000)
+    # every boundary rides ink here, so the split stands or falls on the vote
+    union = np.zeros((300, 600), np.uint8)
+    for room in (parent, local, left, right):
+        cv2.polylines(union, [np.round(room.polygon).astype(np.int32)], True, 255, 3)
+    result = _composite(candidates, building_area=100_000, union=union)
 
     assert [room.area_px for room in result.rooms] == [70_000, 10_000]
 
@@ -210,3 +225,87 @@ def test_one_ended_dashed_line_is_not_a_zone_boundary():
     assert walls.zones is None
     assert len(detection.rooms) == 1
     assert not detection.rooms[0].zone_bounded
+
+
+def test_rotated_seal_bridges_diagonal_gap_without_biting_corners():
+    """A diagonal wall family must not cost every OTHER room its corners.
+
+    Rotated-frame directional closes are how a diamond wing's own doorways
+    get bridged, but the same axis-aligned kernel also cuts a chord across
+    every 90° corner it meets in that frame — biting a triangle out of
+    rooms that have nothing to do with the wing.
+    """
+    from roomify.rooms import _sealed
+
+    def interior_px(sealed: np.ndarray) -> int:
+        n, labels = cv2.connectedComponents((sealed == 0).astype(np.uint8), 4)
+        border = set(
+            np.concatenate(
+                [labels[0], labels[-1], labels[:, 0], labels[:, -1]]
+            ).tolist()
+        )
+        return sum(int((labels == i).sum()) for i in range(1, n) if i not in border)
+
+    mask = np.zeros((200, 200), np.uint8)
+    cv2.rectangle(mask, (40, 40), (160, 160), 255, 6)  # plain axis-aligned room
+    diagonal = np.zeros((200, 200), np.uint8)
+    cv2.line(diagonal, (20, 180), (70, 130), 255, 6)  # 45° wing wall...
+    cv2.line(diagonal, (100, 100), (150, 50), 255, 6)  # ...with a 42px gap
+
+    def close(m: np.ndarray) -> np.ndarray:  # the pipeline's directional recipe
+        out = cv2.morphologyEx(
+            m, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (60, 3))
+        )
+        return cv2.morphologyEx(
+            out, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (3, 60))
+        )
+
+    plain = interior_px(_sealed(mask, (), close, 6.0))
+    rotated = interior_px(_sealed(mask, (45.0,), close, 6.0))
+    assert rotated >= 0.99 * plain, f"corners bitten: {plain} -> {rotated}"
+
+    # …while still doing its job: the diagonal run's 42px gap gets bridged,
+    # which the axis-aligned recipe alone cannot do
+    assert _sealed(diagonal, (), close, 6.0)[115, 85] == 0
+    assert _sealed(diagonal, (45.0,), close, 6.0)[115, 85] == 255
+
+
+def test_invented_divider_does_not_shred_a_solid_room():
+    """A close-fabricated split must lose to the whole room.
+
+    Aggressive fallback rungs carve artifacts out of real rooms; those
+    pieces then look like a decomposition of the room that outvoted them.
+    Only a split whose divider is actually drawn may win.
+    """
+    from roomify.rooms import CVRoom, RoomDetection, _composite
+
+    def rect(x0, y0, x1, y1):
+        polygon = np.array([[x0, y0], [x1, y0], [x1, y1], [x0, y1]], dtype=float)
+        w, h = x1 - x0, y1 - y0
+        return CVRoom(
+            polygon=polygon,
+            area_px=w * h,
+            perimeter_px=2 * (w + h),
+            edge_lengths_px=[w, h, w, h],
+            seed=((x0 + x1) / 2, (y0 + y1) / 2),
+        )
+
+    whole = rect(20, 20, 380, 220)
+    top, bottom = rect(20, 20, 380, 118), rect(20, 122, 380, 220)
+    candidates = [RoomDetection([whole], f"close{i}") for i in range(6)]
+    candidates += [RoomDetection([top, bottom], f"dir{i}") for i in range(2)]
+
+    union = np.zeros((260, 420), np.uint8)
+    cv2.polylines(union, [np.round(whole.polygon).astype(np.int32)], True, 255, 3)
+
+    # nothing drawn between top and bottom: the room stands
+    assert [r.area_px for r in _composite(candidates, 400_000, union).rooms] == [
+        whole.area_px
+    ]
+
+    # draw the divider and the same vote now splits
+    cv2.line(union, (20, 120), (380, 120), 255, 3)
+    assert [r.area_px for r in _composite(candidates, 400_000, union).rooms] == [
+        top.area_px,
+        bottom.area_px,
+    ]

@@ -42,6 +42,11 @@ SECTOR_COLOR_DELTA = 30.0
 ARC_STROKE_COVERAGE = 0.55  # a drawn arc traces the whole quarter-circle
 ARC_STROKE_MARGIN = 0.30  # …and must beat the room's texture baseline
 MIN_SECTOR_PX = 100  # smaller samples (tiny rooms) give no verdict
+# A swing sector's radius IS the leaf, and no door leaf is 1.4m wide. Beyond
+# that the sector test only ever fires on a floor-tint change spanning a wide
+# mouth (measured: 1.6-2.4m "arcs" on balcony and corridor openings, while
+# every genuinely arc-drawn door on the corpus sits at 0.57-1.33m).
+MAX_LEAF_MM = 1400.0
 
 
 @dataclass(frozen=True)
@@ -104,11 +109,12 @@ def find_openings(
 
     out: list[OpeningCandidate] = []
     ids = marker_ids(len(raw))
+    max_leaf_px = door_px * MAX_LEAF_MM / 1000.0
     ordered = sorted(raw, key=lambda c: (c.center[1], c.center[0]))
     for marker, cand in zip(ids, ordered, strict=True):
         kind = "window" if _looks_like_window(cand, walls) else "doorlike"
         arc = None
-        if kind == "doorlike":
+        if kind == "doorlike" and cand.width_px <= max_leaf_px:
             arc = _detect_arc(cand, walls, room_masks, bgr, binary)
         out.append(replace(cand, marker=marker, kind_hint=kind, arc=arc))
     return out, segments
