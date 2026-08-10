@@ -136,6 +136,10 @@ def _scan_segment(
     min_len: float,
     max_len: float,
 ) -> list[OpeningCandidate]:
+    if seg.rooms[0] == seg.rooms[1]:
+        # A stub the same room wraps around: there is nothing on either side
+        # to connect, so any break in it is the stub's own end, not a door.
+        return []
     (sx0, sy0), (sx1, sy1) = seg.start, seg.end
     dx, dy = sx1 - sx0, sy1 - sy0
     if abs(dx) < abs(dy) * 0.2 or abs(dy) < abs(dx) * 0.2:
@@ -604,22 +608,46 @@ def derive_wall_segments(
                     )
                 )
 
-    segments: list[WallSegment] = list(diagonals)
+    # Every stretch of wall belongs to exactly ONE facing pair, the nearest
+    # one. Emitting a segment per qualifying partner drew the same wall twice
+    # wherever three edges sit within a thickness of each other — a recess, or
+    # a stub whose face is also another room's boundary. Nearest-first with
+    # claimed intervals makes the pairing a partition instead of a fan-out.
+    min_pair = max(6.0, t)
+    candidates: list[tuple[float, int, int, float, float]] = []
     for i, (room_i, axis, coord_i, lo_i, hi_i) in enumerate(edges):
-        shared: list[tuple[float, float]] = []
-        for j, (room_j, axis_j, coord_j, lo_j, hi_j) in enumerate(edges):
-            if j == i or axis_j != axis or room_j == room_i:
-                continue
-            if abs(coord_j - coord_i) > 2.5 * t:
+        for j in range(i + 1, len(edges)):
+            room_j, axis_j, coord_j, lo_j, hi_j = edges[j]
+            if axis_j != axis or abs(coord_j - coord_i) > 2.5 * t:
                 continue
             lo, hi = max(lo_i, lo_j), min(hi_i, hi_j)
-            if hi - lo < max(6.0, t):
+            if hi - lo < min_pair:
                 continue
-            if j > i:  # emit each shared wall once
-                center = (coord_i + coord_j) / 2
-                segments.append(_segment(axis, center, lo, hi, t, (room_i, room_j)))
-            shared.append((lo, hi))
-        for lo, hi in _subtract_intervals((lo_i, hi_i), shared):
+            # Facing edges of the SAME room are the two faces of a stub the
+            # room wraps around — one wall, so they pair like any other
+            # facing pair; skipping them drew a line down each face instead.
+            # A room's own two far sides can also land within 2.5t on a
+            # narrow closet, so the gap between them has to be wall: floor
+            # between them means they are not one wall's faces.
+            if room_j == room_i and not _ink_between(walls, axis, coord_i, coord_j, lo, hi):
+                continue
+            candidates.append((abs(coord_j - coord_i), i, j, lo, hi))
+
+    segments: list[WallSegment] = list(diagonals)
+    claimed: dict[int, list[tuple[float, float]]] = {}
+    for _, i, j, lo, hi in sorted(candidates):
+        room_i, axis, coord_i = edges[i][0], edges[i][1], edges[i][2]
+        room_j, coord_j = edges[j][0], edges[j][2]
+        free = _subtract_intervals((lo, hi), claimed.get(i, []) + claimed.get(j, []))
+        for a, b in free:
+            if b - a < min_pair:
+                continue
+            center = (coord_i + coord_j) / 2
+            segments.append(_segment(axis, center, a, b, t, (room_i, room_j)))
+            claimed.setdefault(i, []).append((a, b))
+            claimed.setdefault(j, []).append((a, b))
+    for i, (room_i, axis, coord_i, lo_i, hi_i) in enumerate(edges):
+        for lo, hi in _subtract_intervals((lo_i, hi_i), claimed.get(i, [])):
             if hi - lo >= max(6.0, 1.5 * t):
                 segments.append(_segment(axis, coord_i, lo, hi, t, (room_i, EXTERIOR)))
     silhouette, _ = building_silhouette(walls.union, walls.footprint)
@@ -627,8 +655,29 @@ def derive_wall_segments(
         replace(seg, rooms=_resolve_connects(seg, walls, room_masks, silhouette))
         for seg in segments
     ]
-    centered = [_center_exterior_segment(seg, room_masks) for seg in resolved]
+    centered = [_center_open_segment(seg, room_masks) for seg in resolved]
     return _close_tee_junctions(_fuse_collinear_segments(centered, t), t)
+
+
+def _ink_between(
+    walls: WallExtraction, axis: str, coord_a: float, coord_b: float, lo: float, hi: float
+) -> bool:
+    """Is the strip between two facing edges wall, or floor?
+
+    Sampled on the midline: a stub's two faces have wall between them, a
+    narrow room's two sides have its own floor.
+    """
+    mid = (coord_a + coord_b) / 2
+    h, w = walls.union.shape
+    n = max(4, int(round(hi - lo)))
+    hits = 0
+    for k in range(n):
+        along = lo + (hi - lo) * k / max(n - 1, 1)
+        x, y = (along, mid) if axis == "h" else (mid, along)
+        xi, yi = int(round(x)), int(round(y))
+        if 0 <= yi < h and 0 <= xi < w and walls.union[yi, xi]:
+            hits += 1
+    return hits >= 0.7 * n
 
 
 def _fuse_collinear_segments(segments: list[WallSegment], t: float) -> list[WallSegment]:
@@ -728,8 +777,17 @@ def _close_tee_junctions(segments: list[WallSegment], t: float) -> list[WallSegm
     return out
 
 
-def _center_exterior_segment(seg: WallSegment, room_masks: list[np.ndarray | None]) -> WallSegment:
-    if EXTERIOR not in seg.rooms:
+def _center_open_segment(seg: WallSegment, room_masks: list[np.ndarray | None]) -> WallSegment:
+    """Move a one-room segment from the room's inner face to the wall centre.
+
+    Two facing rooms already average onto the centreline. A leftover edge has
+    only its own room's face, so it stayed half a thickness off — breaking the
+    centreline convention and drawing a second line beside every shared wall
+    it ran alongside (31 such pairs on the corpus). Exterior segments also
+    grow half a thickness at each end so adjacent facade centrelines meet;
+    interior ones must not, or they overrun the neighbour they abut.
+    """
+    if not any(side in (EXTERIOR, UNKNOWN) for side in seg.rooms):
         return seg
     room = next((side for side in seg.rooms if isinstance(side, int)), None)
     mask = room_masks[room] if room is not None else None
@@ -745,8 +803,9 @@ def _center_exterior_segment(seg: WallSegment, room_masks: list[np.ndarray | Non
         return seg
     along /= length
     half = seg.thickness_px / 2
-    start = start + outward * half - along * half
-    end = end + outward * half + along * half
+    grow = half if EXTERIOR in seg.rooms else 0.0
+    start = start + outward * half - along * grow
+    end = end + outward * half + along * grow
     return replace(
         seg,
         start=(float(start[0]), float(start[1])),

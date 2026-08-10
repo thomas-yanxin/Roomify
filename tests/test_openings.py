@@ -246,3 +246,74 @@ def test_facade_beyond_a_notch_is_exterior_not_unknown():
     notch = [c for c in cands if abs(c.center[0] - 300) < 12 and 140 < c.center[1] < 220]
     assert notch, [c.center for c in cands]
     assert "exterior" in notch[0].connects, notch[0].connects
+
+
+def test_wall_peninsula_yields_one_centerline_not_two_faces():
+    """A wall the same room wraps around must not come back as two lines.
+
+    Facing edges of two DIFFERENT rooms already merge onto the wall
+    centerline. A stub or peninsula has the same room on both faces, so the
+    pairing skipped it and emitted each face as its own segment — a double
+    line down every stub (20 such pairs on the corpus).
+    """
+    img = blank()
+    draw_wall_rect(img, 100, 100, 500, 400, thickness=10)
+    # a stub poking into the room from the left wall, same room both sides
+    cv2.rectangle(img, (105, 240), (260, 250), (WALL_GREY,) * 3, -1)
+    wx, drafts = _drafts(img)
+    segments = derive_wall_segments(drafts, wx)
+
+    stub = [
+        s
+        for s in segments
+        if abs(s.start[1] - s.end[1]) < 3
+        and 230 < (s.start[1] + s.end[1]) / 2 < 260
+        and max(s.start[0], s.end[0]) < 300
+    ]
+    assert len(stub) == 1, [(s.start, s.end, s.rooms) for s in stub]
+    assert (stub[0].start[1] + stub[0].end[1]) / 2 == pytest.approx(245, abs=3)
+
+
+def test_one_wall_stretch_gets_one_segment():
+    """Three edges within a thickness must not draw the wall twice.
+
+    A recess, or a stub whose face is also another room's boundary, puts
+    three parallel edges close together. Pairing every qualifying partner
+    emitted a segment per pair; the nearest-first claim makes the pairing a
+    partition, so each stretch of wall is drawn once.
+    """
+    img = blank()
+    draw_wall_rect(img, 100, 100, 500, 400, thickness=10)
+    cv2.line(img, (300, 100), (300, 400), (WALL_GREY,) * 3, 10)
+    draw_gap(img, 294, 220, 306, 260)
+    draw_sill(img, 296, 220, 296, 260)
+    draw_sill(img, 304, 220, 304, 260)
+    # a shallow recess in the left room's face of the divider
+    cv2.rectangle(img, (286, 300), (296, 380), (255, 255, 255), -1)
+    wx, drafts = _drafts(img)
+    segments = derive_wall_segments(drafts, wx)
+
+    divider = [
+        s
+        for s in segments
+        if abs(s.start[0] - s.end[0]) < 3 and 275 < (s.start[0] + s.end[0]) / 2 < 320
+    ]
+    # every point of the divider is covered by at most one segment
+    for y in range(110, 390, 10):
+        covering = [
+            s
+            for s in divider
+            if min(s.start[1], s.end[1]) - 1 <= y <= max(s.start[1], s.end[1]) + 1
+        ]
+        assert len(covering) <= 1, (y, [(s.start, s.end, s.rooms) for s in covering])
+
+
+def test_stub_wall_hosts_no_opening():
+    """A wall with the same room on both faces cannot connect anything."""
+    img = blank()
+    draw_wall_rect(img, 100, 100, 500, 400, thickness=10)
+    cv2.rectangle(img, (105, 240), (260, 250), (WALL_GREY,) * 3, -1)
+    wx, drafts = _drafts(img)
+    cands, segments = find_openings(wx, drafts, img, door_px=40)
+    assert any(s.rooms[0] == s.rooms[1] for s in segments), "expected a stub segment"
+    assert not [c for c in cands if c.connects[0] == c.connects[1]]
