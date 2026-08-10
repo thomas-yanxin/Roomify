@@ -651,11 +651,30 @@ def room_semantics_prompt(n_rooms: int) -> str:
     )
 
 
-def openings_prompt(ids: list[str], include_extras: bool = True) -> str:
+def openings_prompt(
+    ids: list[str], include_extras: bool = True, context: dict[str, str] | None = None
+) -> str:
+    """``context`` maps marker → a structural one-liner from CV (what the
+    break connects, its measured width). The model cannot see adjacency in a
+    tight crop, yet it is the strongest classification prior there is: a
+    900mm break between two interior rooms is a door, whatever its strokes
+    resemble."""
     types = ", ".join(f'"{t}"' for t in _ELEMENT_TYPES)
+    context_block = ""
+    if context:
+        lines = "\n".join(f"  {marker}: {context[marker]}" for marker in ids if marker in context)
+        context_block = (
+            "Measured context for each marker (from pixel geometry — trust it):\n"
+            f"{lines}\n"
+            "Openings between two interior rooms are doors or passages, not windows, unless "
+            "the crop clearly shows glazing onto a light well. Windows face the exterior. "
+            "A door-width break (700-1100mm) between rooms with a plain leaf line is a "
+            "single_door even without a swing arc.\n"
+        )
     extras = (
-        "Additionally, list legend elements NO marker covers — stairs, elevators, columns, "
-        'equipment platforms, and genuinely unmarked doors/windows — under "extra_elements": '
+        "Additionally, list legend elements NO marker covers — stairs, railings, elevators, "
+        "columns, equipment platforms, and genuinely unmarked doors/windows — under "
+        '"extra_elements": '
         '{"box_2d": [ymin, xmin, ymax, xmax] integers 0-1000, "element_type": ..., '
         '"raw_text": ...}. Never repeat an opening that already has a letter marker. '
         "Use an empty list if nothing was missed.\n"
@@ -681,6 +700,7 @@ def openings_prompt(ids: list[str], include_extras: bool = True) -> str:
         "texture artifact or a gap between unrelated strokes).\n"
         "Do NOT report door swing direction or hinge side — those are measured separately from "
         "pixel evidence.\n"
+        + context_block
         + extras
         + 'Return JSON: {"candidates": [{"marker": "'
         + ids[0]

@@ -75,6 +75,24 @@ def load(path: str | Path, page: int | None = None, max_dim: int = 2000) -> Sour
     )
 
 
+def derotate(bgr: np.ndarray, angle_deg: float) -> tuple[np.ndarray, np.ndarray]:
+    """Rotate the image so walls become axis-aligned, on an expanded
+    white canvas (plans sit on paper white). Returns the rotated image and
+    the 2x3 affine mapping rotated-frame points BACK to input-frame points —
+    emitted pixel coordinates must stay in the frame of the source image.
+    """
+    h, w = bgr.shape[:2]
+    m = cv2.getRotationMatrix2D((w / 2.0, h / 2.0), angle_deg, 1.0)
+    cos, sin = abs(m[0, 0]), abs(m[0, 1])
+    nw, nh = int(round(h * sin + w * cos)), int(round(h * cos + w * sin))
+    m[0, 2] += nw / 2.0 - w / 2.0
+    m[1, 2] += nh / 2.0 - h / 2.0
+    rotated = cv2.warpAffine(
+        bgr, m, (nw, nh), flags=cv2.INTER_CUBIC, borderValue=(255, 255, 255)
+    )
+    return rotated, cv2.invertAffineTransform(m)
+
+
 def _load_pdf_page(data: bytes, page_index: int) -> np.ndarray:
     import fitz  # pymupdf — imported lazily; image-only users never need it
 

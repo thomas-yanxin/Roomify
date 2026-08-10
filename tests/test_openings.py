@@ -168,3 +168,32 @@ def test_unmatched_internal_wall_is_unknown():
     ]
     assert divider
     assert all("unknown" in segment.rooms for segment in divider)
+
+
+def test_tee_junction_ends_meet_perpendicular_walls():
+    from roomify.openings import WallSegment, _close_tee_junctions
+
+    horizontal = WallSegment(start=(104.0, 200.0), end=(300.0, 200.0),
+                             thickness_px=8.0, rooms=(0, 1))
+    vertical = WallSegment(start=(100.0, 100.0), end=(100.0, 300.0),
+                           thickness_px=8.0, rooms=(0, "exterior"))
+    closed = _close_tee_junctions([horizontal, vertical], t=8.0)
+    assert closed[0].start == (100.0, 200.0)  # extended 4px to the crossing wall
+    assert closed[1] == vertical  # the crossed wall itself is untouched
+
+
+def test_short_diagonal_stubs_are_not_walls(simple_plan):
+    import numpy as np
+
+    from roomify.merge import merge_rooms
+    from roomify.openings import derive_wall_segments
+    from roomify.rooms import detect_rooms
+    from roomify.walls import extract_walls
+
+    wx = extract_walls(simple_plan)
+    drafts = merge_rooms(detect_rooms(wx).rooms, None, simple_plan.shape[:2]).rooms
+    for seg in derive_wall_segments(drafts, wx):
+        dx = abs(seg.end[0] - seg.start[0])
+        dy = abs(seg.end[1] - seg.start[1])
+        if min(dx, dy) > 0.09 * max(dx, dy):  # diagonal
+            assert float(np.hypot(dx, dy)) >= 2.5 * wx.thickness_px

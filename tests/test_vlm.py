@@ -222,3 +222,16 @@ def test_room_overlay_keeps_marker_inside_narrow_room():
     ys = np.where(yellow)[0]
     assert ys.size > 0
     assert 100 <= ys.mean() <= 120
+
+
+def test_openings_prompt_carries_structural_context():
+    from roomify.vlm import openings_prompt
+
+    prompt = openings_prompt(
+        ["A", "B"],
+        include_extras=False,
+        context={"A": "connects 客厅 (interior room) ↔ 卧室 (interior room), width ≈ 880mm"},
+    )
+    assert "connects 客厅" in prompt
+    assert "doors or passages, not windows" in prompt
+    assert "genuinely unmarked doors/windows" in openings_prompt(["A"])

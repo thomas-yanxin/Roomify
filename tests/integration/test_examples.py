@@ -89,6 +89,14 @@ def test_fp1_document_valid_json(fp1_plan):
     round_tripped = FloorPlan.model_validate_json(fp1_plan.model_dump_json())
     assert round_tripped == fp1_plan
     assert fp1_plan.north_angle_deg == 0
+    assert fp1_plan.rootNodeIds == ["site_roomify"]
+    assert sum(node["type"] == "wall" for node in fp1_plan.nodes.values()) == len(
+        fp1_plan.walls
+    )
+    assert all(
+        node["parentId"] is None or node["parentId"] in fp1_plan.nodes
+        for node in fp1_plan.nodes.values()
+    )
 
 
 @pytest.mark.skipif(

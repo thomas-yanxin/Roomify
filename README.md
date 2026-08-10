@@ -245,7 +245,8 @@ uv run ruff check src tests
 uv run mypy src
 ```
 
-Live VLM acceptance tests use the bundled example and require the three VLM
+Every feature change must pass the live VLM acceptance tests. They run the
+bundled example against its human-reviewed fixture and require the three VLM
 environment variables:
 
 ```bash

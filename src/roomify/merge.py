@@ -57,6 +57,7 @@ class RoomDraft:
     room_type: str = "unknown_space"
     printed_area_sqm: float | None = None
     marker: str | None = None  # overlay marker id, for warnings/debug
+    zone_bounded: bool = False  # boundary includes a dashed zone divider
 
 
 @dataclass
@@ -117,6 +118,7 @@ def merge_rooms(
             source="cv",
             confidence=0.3,
             marker=marker,
+            zone_bounded=cv_room.zone_bounded,
         )
         if entry is None:
             if read is not None:
@@ -205,11 +207,13 @@ def estimate_scale(
     y_candidates = _axis_candidates(chains, ("left", "right"), extent_y)
 
     # Median of per-room area ratios: px² per mm². Only CV-measured polygons
-    # participate — VLM bbox geometry is approximate by construction.
+    # participate — VLM bbox geometry is approximate by construction, and
+    # zone-bounded rooms (dashed functional splits) measure against printed
+    # values too loosely to calibrate a scale.
     ratios = [
         r.area_px / (r.printed_area_sqm * 1e6)
         for r in rooms
-        if r.printed_area_sqm and r.source != "vlm"
+        if r.printed_area_sqm and r.source != "vlm" and not r.zone_bounded
     ]
     area_scale_sq = statistics.median(ratios) if len(ratios) >= MIN_ROOMS_FOR_AREA_SCALE else None
     from_areas = area_scale_sq**0.5 if area_scale_sq else None
@@ -221,23 +225,41 @@ def estimate_scale(
         )
         sx, nx, sy, ny = best
         disagreement = abs(sx * sy / area_scale_sq - 1)
-        confidence = (
-            "high"
-            if disagreement <= AGREE_HIGH
-            else "medium"
-            if disagreement <= AGREE_MEDIUM
-            else "low"
-        )
-        if confidence == "low":
+        # A degenerate pairing can nail the area PRODUCT with an absurd
+        # per-axis split (seen: 11:1 when a lone chain matched the wrong
+        # extent on a derotated plan); real listing exports stay ≤ ~1.15.
+        anisotropy = max(sx, sy) / max(min(sx, sy), 1e-12)
+        if disagreement > AGREE_MEDIUM or anisotropy > 1.35:
+            # No credible chain pair — typical of diagonal units, where
+            # dimension chains only span the rectilinear wing while the
+            # footprint bbox covers the whole plan. The area median is
+            # self-consistent with the polygons being measured; a wrong
+            # per-axis split is worse than an isotropic assumption.
             warnings.append(
                 ParseWarning(
                     code="scale_disagreement",
                     message=(
-                        f"dimension chains and printed areas disagree by "
-                        f"{disagreement:.0%} on the area scale"
+                        f"dimension chains disagree with printed areas "
+                        f"(area {disagreement:.0%}, axis ratio "
+                        f"{anisotropy:.2f}); using the printed-area scale "
+                        "(equal axes assumed)"
                     ),
                 )
             )
+            assert from_areas is not None
+            return (
+                ScaleDraft(
+                    px_per_mm_x=from_areas,
+                    px_per_mm_y=from_areas,
+                    method="printed_areas",
+                    confidence="medium" if len(ratios) >= 5 else "low",
+                    px_per_mm_from_areas=from_areas,
+                    n_rooms_used=len(ratios),
+                    n_chain_values_used=0,
+                ),
+                warnings,
+            )
+        confidence = "high" if disagreement <= AGREE_HIGH else "medium"
         return (
             ScaleDraft(
                 px_per_mm_x=sx,
@@ -278,17 +300,31 @@ def estimate_scale(
         else:
             sy, ny = min(y_candidates, key=lambda c: c[0])
             sx, nx = area_scale_sq / sy, 0
-        return (
-            ScaleDraft(
-                px_per_mm_x=sx,
-                px_per_mm_y=sy,
-                method="dimension_chains+printed_areas",
-                confidence="medium" if len(ratios) >= 5 else "low",
-                px_per_mm_from_areas=from_areas,
-                n_rooms_used=len(ratios),
-                n_chain_values_used=nx + ny,
-            ),
-            warnings,
+        # Same degenerate-pairing guard as above: a lone chain matched to
+        # the wrong extent forces the derived axis absurdly far away (seen:
+        # 11:1 on a derotated plan). Real exports stay ≤ ~1.15.
+        if max(sx, sy) / max(min(sx, sy), 1e-12) <= 1.35:
+            return (
+                ScaleDraft(
+                    px_per_mm_x=sx,
+                    px_per_mm_y=sy,
+                    method="dimension_chains+printed_areas",
+                    confidence="medium" if len(ratios) >= 5 else "low",
+                    px_per_mm_from_areas=from_areas,
+                    n_rooms_used=len(ratios),
+                    n_chain_values_used=nx + ny,
+                ),
+                warnings,
+            )
+        warnings.append(
+            ParseWarning(
+                code="scale_disagreement",
+                message=(
+                    "single dimension chain contradicts the printed-area scale "
+                    f"(axis ratio {max(sx, sy) / max(min(sx, sy), 1e-12):.1f}); "
+                    "using the printed-area scale (equal axes assumed)"
+                ),
+            )
         )
 
     if from_areas:
@@ -360,7 +396,7 @@ class OpeningDraft:
 
 @dataclass
 class ElementDraft:
-    """A free-standing element (VLM box_2d geometry), WORKING pixels."""
+    """A VLM-only element with box_2d geometry, in WORKING pixels."""
 
     element_type: str
     raw_text: str | None
@@ -371,6 +407,10 @@ class ElementDraft:
 
 # Types whose leaves swing on a hinge — the only ones arc evidence applies to.
 _SWINGING = {"single_door", "double_door", "folding_door"}
+# Legend elements that legitimately stand free of walls; anything else the
+# VLM reports as an "extra" is an opening claim without usable geometry.
+_FREE_STANDING = {"stair", "railing", "elevator", "escalator",
+                  "equipment_platform", "column", "chimney", "unknown_symbol"}
 
 
 def merge_openings(
@@ -453,10 +493,10 @@ def merge_openings(
     for extra in read.extra_elements if read is not None else []:
         y0, x0, y1, x1 = (v / 1000.0 for v in extra.box_2d)
         bbox = (x0 * w, y0 * h, x1 * w, y1 * h)
-        # Models routinely "re-discover" openings that already carry a letter
-        # marker (observed: 5 of 6 extras duplicated marked openings); an
-        # extra that overlaps any candidate is a duplicate, not a find.
-        if any(_boxes_overlap(bbox, c.bbox, slack=8.0) for c in candidates):
+        approximate_opening = extra.element_type not in _FREE_STANDING
+        if approximate_opening and any(
+            _boxes_overlap(bbox, c.bbox, slack=8.0) for c in candidates
+        ):
             continue
         elements.append(
             ElementDraft(
@@ -467,9 +507,7 @@ def merge_openings(
                 confidence=min(extra.confidence, 0.5),
             )
         )
-        if extra.element_type not in ("stair", "railing", "elevator", "escalator",
-                                      "equipment_platform", "column", "chimney",
-                                      "unknown_symbol"):
+        if approximate_opening:
             warnings.append(
                 ParseWarning(
                     code="opening_geometry_is_bbox",
@@ -487,8 +525,7 @@ def _boxes_overlap(
     b: tuple[float, float, float, float],
     slack: float,
 ) -> bool:
-    """True when the boxes (grown by ``slack``) share a substantial region —
-    at least 30% of the smaller box."""
+    """True when grown boxes share at least 30% of the smaller box."""
     ax0, ay0, ax1, ay1 = a
     bx0, by0, bx1, by1 = (b[0] - slack, b[1] - slack, b[2] + slack, b[3] + slack)
     ix = min(ax1, bx1) - max(ax0, bx0)

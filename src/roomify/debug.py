@@ -33,8 +33,8 @@ def walls_overlay(bgr: np.ndarray, extraction: WallExtraction) -> np.ndarray:
     out = cv2.addWeighted(tint, 0.55, out, 0.45, 0)
     x0, y0, x1, y1 = extraction.footprint
     cv2.rectangle(out, (x0, y0), (x1, y1), (255, 0, 255), 1)
-    lo, hi = extraction.band
-    label = f"band {lo}-{hi}{' (fallback)' if extraction.band_fallback else ''}"
+    label = "band " + "+".join(f"{lo}-{hi}" for lo, hi in extraction.bands)
+    label += ' (fallback)' if extraction.band_fallback else ''
     label += f"  thickness {extraction.thickness_px:.1f}px"
     cv2.putText(out, label, (8, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
     return out

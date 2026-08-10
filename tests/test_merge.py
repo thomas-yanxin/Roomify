@@ -32,6 +32,7 @@ def _walls(footprint=(0, 0, 427, 569), thickness=9.0):
         lines=empty,
         union=empty,
         band=(130, 185),
+        bands=[(130, 185)],
         band_fallback=False,
         thickness_px=thickness,
         footprint=footprint,
@@ -222,7 +223,7 @@ def test_no_scale_keeps_everything():
 # ------------------------------------------------------------ merge_openings
 
 
-def test_extra_elements_deduped_against_marked_openings():
+def test_extra_elements_only_dedupe_opening_duplicates():
     from dataclasses import dataclass
 
     from roomify.merge import merge_openings
@@ -250,12 +251,35 @@ def test_extra_elements_deduped_against_marked_openings():
                 # duplicate of A, a few px off -> dropped
                 {"box_2d": [195, 98, 215, 158], "element_type": "window",
                  "raw_text": None, "confidence": 0.8, "is_real": True},
-                # genuinely elsewhere -> kept
-                {"box_2d": [700, 700, 800, 800], "element_type": "stair",
+                # same projection as A but a separate free-standing element -> kept
+                {"box_2d": [250, 100, 300, 160], "element_type": "stair",
+                 "raw_text": None, "confidence": 0.8, "is_real": True},
+                # same projection on a nearby parallel wall -> distinct opening
+                {"box_2d": [250, 100, 300, 160], "element_type": "window",
+                 "raw_text": None, "confidence": 0.8, "is_real": True},
+                # a VLM-only opening that CV missed -> kept with approximate geometry
+                {"box_2d": [700, 700, 750, 760], "element_type": "window",
                  "raw_text": None, "confidence": 0.8, "is_real": True},
             ],
         }
     )
     drafts, elements, warnings, unresolved = merge_openings([_Cand()], read, (1000, 1000))
     assert len(drafts) == 1
-    assert [e.element_type for e in elements] == ["stair"]
+    assert [e.element_type for e in elements] == ["stair", "window", "window"]
+    assert [warning.code for warning in warnings] == [
+        "opening_geometry_is_bbox",
+        "opening_geometry_is_bbox",
+    ]
+
+
+def test_scale_falls_back_to_areas_when_chains_disagree():
+    # Chains that cannot explain the printed areas (diagonal units) must not
+    # ship a bogus per-axis split; the isotropic area median wins.
+    walls = _walls(footprint=(0, 0, 581, 569), thickness=6.0)
+    chains = [ChainRead(side="top", values_mm=[12218]), ChainRead(side="left", values_mm=[10292])]
+    rooms = [_draft(p * 1e6 * 0.032 * 0.032, p) for p in (19.46, 17.94, 21.86, 5.94, 7.07)]
+    scale, warnings = estimate_scale(chains, walls, rooms)
+    assert scale is not None
+    assert scale.method == "printed_areas"
+    assert scale.px_per_mm_x == scale.px_per_mm_y == pytest.approx(0.032, rel=0.01)
+    assert any(w.code == "scale_disagreement" for w in warnings)

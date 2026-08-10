@@ -4,7 +4,7 @@ import pytest
 
 from conftest import WALL_GREY, blank, draw_gap, draw_wall_rect
 from roomify.rooms import detect_rooms
-from roomify.walls import extract_walls
+from roomify.walls import WallExtraction, extract_walls
 
 
 def test_two_rooms_sealed_by_sills(simple_plan):
@@ -76,3 +76,79 @@ def test_seed_lies_inside_polygon(simple_plan):
 
     for room in detect_rooms(extract_walls(simple_plan)).rooms:
         assert Polygon(room.polygon).contains(Point(room.seed))
+
+
+def test_square_corners_removes_diagonal_jogs():
+    from roomify.rooms import _square_corners
+
+    # a rectangle whose one corner is cut by a short 45° jog
+    pts = np.array(
+        [[0.0, 0.0], [90.0, 0.0], [100.0, 10.0], [100.0, 100.0], [0.0, 100.0]]
+    )
+    squared = _square_corners(pts, max_cut=20.0)
+    assert len(squared) == 4
+    assert [100.0, 0.0] in squared.tolist()
+
+    # a genuine long chamfer survives
+    pts_big = np.array(
+        [[0.0, 0.0], [60.0, 0.0], [100.0, 40.0], [100.0, 100.0], [0.0, 100.0]]
+    )
+    assert len(_square_corners(pts_big, max_cut=20.0)) == 5
+
+
+def test_spike_spurs_removed():
+    from roomify.rooms import _remove_spikes
+
+    # a rectangle with a needle poking inward from its bottom edge
+    pts = np.array(
+        [[0.0, 0.0], [100.0, 0.0], [100.0, 100.0], [60.0, 100.0],
+         [59.0, 80.0], [58.0, 100.0], [0.0, 100.0]]
+    )
+    cleaned = _remove_spikes(pts, max_len=25.0)
+    assert len(cleaned) <= 6
+    assert not any(abs(p[1] - 80.0) < 1 for p in cleaned)  # the tip is gone
+
+
+def test_open_courtyard_is_not_closed_into_a_room():
+    union = np.zeros((400, 400), np.uint8)
+    cv2.line(union, (40, 40), (40, 360), 255, 10)
+    cv2.line(union, (40, 40), (360, 40), 255, 10)
+    cv2.line(union, (360, 40), (360, 170), 255, 10)
+    cv2.line(union, (360, 230), (360, 360), 255, 10)
+    cv2.line(union, (40, 360), (360, 360), 255, 10)
+    walls = WallExtraction(
+        solid=union,
+        lines=np.zeros_like(union),
+        union=union,
+        band=(130, 185),
+        bands=[(130, 185)],
+        band_fallback=False,
+        thickness_px=10.0,
+        footprint=(35, 35, 365, 365),
+    )
+
+    assert detect_rooms(walls).rooms == []
+
+
+def test_dashed_zone_divider_splits_and_tags():
+    # 玄关/走廊-style functional split: a dashed line spanning wall to wall
+    # is drawn evidence of a zone boundary — seal it, measure both zones,
+    # and tag them as zone-bounded (weaker evidence than a physical wall).
+    img = blank()
+    draw_wall_rect(img, 100, 100, 500, 400, thickness=10)
+    for y in range(108, 396, 12):
+        cv2.line(img, (300, y), (300, y + 6), (120, 120, 120), 2)
+    det = detect_rooms(extract_walls(img))
+    assert len(det.rooms) == 2, [r.area_px for r in det.rooms]
+    assert all(r.zone_bounded for r in det.rooms)
+
+
+def test_label_text_row_is_not_a_zone_divider():
+    # A printed label floats mid-room: fused glyphs must not become a
+    # boundary (they anchor on no wall).
+    img = blank()
+    draw_wall_rect(img, 100, 100, 500, 400, thickness=10)
+    cv2.putText(img, "23.5", (260, 260), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (90, 90, 90), 1)
+    det = detect_rooms(extract_walls(img))
+    assert len(det.rooms) == 1
+    assert not det.rooms[0].zone_bounded

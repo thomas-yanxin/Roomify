@@ -16,7 +16,7 @@ import numpy as np
 from shapely.geometry import Point, Polygon
 
 from roomify import debug as debug_mod
-from roomify.io import SourceImage, load
+from roomify.io import SourceImage, derotate, load
 from roomify.merge import (
     DEVIATION_FLAG_THRESHOLD,
     ElementDraft,
@@ -47,7 +47,7 @@ from roomify.schema import (
 from roomify.schema import (
     Point as SchemaPoint,
 )
-from roomify.walls import WallExtraction, extract_walls
+from roomify.walls import WallExtraction, estimate_plan_rotation, extract_walls
 
 logger = logging.getLogger("roomify.pipeline")
 
@@ -87,6 +87,26 @@ def parse(
     warnings: list[ParseWarning] = []
     unresolved: list[Unresolved] = []
 
+    # Whole-sheet rotations (decorative listing exports): parse in a
+    # derotated frame where walls are axis-aligned — every CV stage and the
+    # VLM overlays run on ``work_bgr`` — and map emitted pixel coordinates
+    # back through ``back``. Millimetre coordinates stay in the derotated,
+    # wall-aligned frame (the only frame where they are rectilinear).
+    rotation = estimate_plan_rotation(src.bgr)
+    work_bgr = src.bgr
+    back: np.ndarray | None = None
+    if abs(rotation) >= 3.0:
+        work_bgr, back = derotate(src.bgr, rotation)
+        warnings.append(
+            ParseWarning(
+                code="plan_derotated",
+                message=(
+                    f"plan drawn rotated {rotation:.1f}°; parsed in a derotated "
+                    "frame (polygon_mm axes are wall-aligned)"
+                ),
+            )
+        )
+
     client = None
     if use_vlm:
         from roomify.vlm import VLMClient, VLMUnavailable
@@ -110,10 +130,10 @@ def parse(
         # timing out under 3-way concurrency.
         executor = ThreadPoolExecutor(max_workers=2)
         plan_future = executor.submit(
-            client.call, plan_read_prompt(), [src.bgr], PlanRead, wire_schema=PLAN_WIRE
+            client.call, plan_read_prompt(), [work_bgr], PlanRead, wire_schema=PLAN_WIRE
         )
 
-    walls = extract_walls(src.bgr)
+    walls = extract_walls(work_bgr)
     if walls.band_fallback:
         warnings.append(
             ParseWarning(
@@ -140,7 +160,7 @@ def parse(
             room_semantics_prompt,
         )
 
-        overlay = render_room_overlay(src.bgr, detection.rooms)
+        overlay = render_room_overlay(work_bgr, detection.rooms)
         if debug_dir:
             debug_mod.save(debug_dir, "vlm_room_overlay.png", overlay)
         # 1.5× upscale: printed ㎡ labels sit at the OCR limit on ~700px
@@ -161,7 +181,7 @@ def parse(
                              "rooms keep CV geometry with unknown names")
             )
 
-    outcome = merge_rooms(detection.rooms, room_read, src.bgr.shape[:2])
+    outcome = merge_rooms(detection.rooms, room_read, work_bgr.shape[:2])
     warnings += outcome.warnings
     unresolved += outcome.unresolved
 
@@ -181,7 +201,7 @@ def parse(
     rooms = checked.rooms
 
     door_px = 1000.0 * scale_draft.px_per_mm_x if scale_draft else None
-    candidates, segments = find_openings(walls, rooms, src.bgr, door_px)
+    candidates, segments = find_openings(walls, rooms, work_bgr, door_px)
 
     openings_read = None
     if client is not None and candidates:
@@ -193,9 +213,10 @@ def parse(
             render_openings_overlay,
         )
 
-        overlay = render_openings_overlay(src.bgr, candidates)
+        overlay = render_openings_overlay(work_bgr, candidates)
         if debug_dir:
             debug_mod.save(debug_dir, "vlm_openings_overlay.png", overlay)
+        context = _opening_context(candidates, rooms, scale_draft)
         # Small chunks, in parallel: this endpoint 502s beyond ~6 images per
         # request, and at ~45s per call serial chunks would dominate runtime.
         chunk_size = 5
@@ -203,11 +224,15 @@ def parse(
         futures = []
         assert executor is not None
         for idx, chunk in enumerate(chunks):
-            crops = [render_candidate_crop(src.bgr, c) for c in chunk]
+            crops = [render_candidate_crop(work_bgr, c) for c in chunk]
             futures.append(
                 executor.submit(
                     client.call,
-                    openings_prompt([c.marker for c in chunk], include_extras=idx == 0),
+                    openings_prompt(
+                        [c.marker for c in chunk],
+                        include_extras=idx == 0,
+                        context=context,
+                    ),
                     [overlay, *crops],
                     OpeningsRead,
                     wire_schema=OPENINGS_WIRE,
@@ -233,8 +258,8 @@ def parse(
         skipped = [c for chunk in failed for c in chunk][12:]
         for cand in retry:
             part = client.call(
-                openings_prompt([cand.marker], include_extras=False),
-                [overlay, render_candidate_crop(src.bgr, cand)],
+                openings_prompt([cand.marker], include_extras=False, context=context),
+                [overlay, render_candidate_crop(work_bgr, cand)],
                 OpeningsRead,
                 wire_schema=OPENINGS_WIRE,
             )
@@ -265,7 +290,7 @@ def parse(
         executor.shutdown(wait=False)
 
     opening_drafts, element_drafts, op_warnings, op_unresolved = merge_openings(
-        candidates, openings_read, src.bgr.shape[:2]
+        candidates, openings_read, work_bgr.shape[:2]
     )
     warnings += op_warnings
     unresolved += op_unresolved
@@ -281,22 +306,24 @@ def parse(
     )
 
     if debug_dir:
-        debug_mod.save(debug_dir, "01_walls.png", debug_mod.walls_overlay(src.bgr, walls))
+        debug_mod.save(debug_dir, "01_walls.png", debug_mod.walls_overlay(work_bgr, walls))
         debug_mod.save(
             debug_dir,
             "02_rooms.png",
             debug_mod.polygons_overlay(
-                src.bgr,
+                work_bgr,
                 [r.polygon for r in rooms],
                 [f"{i + 1}:{r.name or '?'}" for i, r in enumerate(rooms)],
             ),
         )
         from roomify.vlm import render_openings_overlay as _roo
 
-        debug_mod.save(debug_dir, "03_openings.png", _roo(src.bgr, candidates))
+        debug_mod.save(debug_dir, "03_openings.png", _roo(work_bgr, candidates))
 
     plan = _assemble(
         src,
+        work_bgr,
+        back,
         walls,
         rooms,
         segments,
@@ -318,11 +345,46 @@ def parse(
     return plan
 
 
+def _opening_context(
+    candidates: list,
+    rooms: list[RoomDraft],
+    scale_draft: ScaleDraft | None,
+) -> dict[str, str]:
+    """Per-marker structural one-liners for the openings prompt: what the
+    break connects and its measured width. Adjacency is invisible in a tight
+    crop but is the strongest classification prior available."""
+
+    def side_label(side: int | str) -> str:
+        if isinstance(side, int):
+            room = rooms[side]
+            label = room.name or room.room_type
+            return f"{label} (interior room)"
+        if side == "exterior":
+            return "the exterior"
+        return "interior circulation space"
+
+    context: dict[str, str] = {}
+    for cand in candidates:
+        if scale_draft is not None:
+            per_mm = (
+                scale_draft.px_per_mm_x if cand.axis == "h" else scale_draft.px_per_mm_y
+            )
+            width = f"width ≈ {cand.width_px / per_mm:.0f}mm"
+        else:
+            width = f"width ≈ {cand.width_px:.0f}px"
+        context[cand.marker] = (
+            f"connects {side_label(cand.connects[0])} ↔ {side_label(cand.connects[1])}, {width}"
+        )
+    return context
+
+
 # ------------------------------------------------------------------ assembly
 
 
 def _assemble(
     src: SourceImage,
+    work_bgr: np.ndarray,
+    back: np.ndarray | None,
     walls: WallExtraction,
     rooms: list[RoomDraft],
     segments: list[WallSegment],
@@ -342,7 +404,24 @@ def _assemble(
     origin = (walls.footprint[0] * f, walls.footprint[1] * f)  # mm origin
 
     def pt(x: float, y: float) -> SchemaPoint:
+        # pixel outputs live in the SOURCE image frame: undo the derotation
+        if back is not None:
+            x, y = (
+                back[0, 0] * x + back[0, 1] * y + back[0, 2],
+                back[1, 0] * x + back[1, 1] * y + back[1, 2],
+            )
         return SchemaPoint(x=x * f, y=y * f)
+
+    def bbox_px(x0: float, y0: float, x1: float, y1: float) -> BBox:
+        # a derotated-frame box maps to a rotated quad; emit its source-frame
+        # axis-aligned bounds
+        corners = [pt(x0, y0), pt(x1, y0), pt(x0, y1), pt(x1, y1)]
+        return BBox(
+            x0=min(c.x for c in corners),
+            y0=min(c.y for c in corners),
+            x1=max(c.x for c in corners),
+            y1=max(c.y for c in corners),
+        )
 
     def pt_mm(x: float, y: float) -> SchemaPoint:
         assert scale is not None
@@ -372,6 +451,15 @@ def _assemble(
 
     schema_rooms: list[Room] = []
     for i, draft in enumerate(rooms):
+        if draft.zone_bounded:
+            warnings.append(
+                ParseWarning(
+                    code="room_zone_boundary",
+                    message="room boundary includes a dashed zone divider "
+                    "(functional split, not a physical wall)",
+                    ref=room_ids[i],
+                )
+            )
         ring = draft.polygon
         polygon_px = [pt(x, y) for x, y in ring]
         closed = np.vstack([ring, ring[:1]]) * f
@@ -478,7 +566,7 @@ def _assemble(
         protrusion = None
         if op.element_type == "bay_window" and 0 <= op.wall_index < len(segments):
             protrusion = measure_bay_protrusion(
-                segments[op.wall_index], op.bbox, walls, rooms, src.bgr
+                segments[op.wall_index], op.bbox, walls, rooms, work_bgr
             )
         protrusion_px = [pt(x, y) for x, y in protrusion] if protrusion else None
         protrusion_mm = (
@@ -503,7 +591,7 @@ def _assemble(
                 id=opening_ids[i],
                 element_type=op.element_type,  # type: ignore[arg-type]
                 raw_text=op.raw_text,
-                bbox_px=BBox(x0=x0 * f, y0=y0 * f, x1=x1 * f, y1=y1 * f),
+                bbox_px=bbox_px(x0, y0, x1, y1),
                 center_px=pt(*op.center),
                 width_px=op.width_px * f,
                 width_mm=width_mm,
@@ -533,7 +621,7 @@ def _assemble(
                 id=f"el_{i + 1}",
                 element_type=el.element_type,  # type: ignore[arg-type]
                 raw_text=el.raw_text,
-                bbox_px=BBox(x0=x0 * f, y0=y0 * f, x1=x1 * f, y1=y1 * f),
+                bbox_px=bbox_px(x0, y0, x1, y1),
                 room_id=room_id,
                 source=el.source,  # type: ignore[arg-type]
                 confidence=el.confidence,
@@ -542,7 +630,12 @@ def _assemble(
 
     north = getattr(plan_read, "north_angle_deg", None) if plan_read else None
     if north is not None:
-        north = float(north) % 360.0
+        north = float(north)
+        if back is not None:
+            # the VLM read the arrow in the derotated frame; report in the
+            # source frame (derotation turned content by -rotation)
+            north += float(np.degrees(np.arctan2(back[1, 0], back[0, 0])))
+        north %= 360.0
 
     return FloorPlan(
         source_file=src.source_file,

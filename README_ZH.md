@@ -231,7 +231,8 @@ uv run ruff check src tests
 uv run mypy src
 ```
 
-在线 VLM 验收测试使用仓库内的示例，并需要配置三个 VLM 环境变量：
+每个功能改动都必须通过在线 VLM 验收：真实运行仓库示例并与人工审核基准对比。
+测试需要配置三个 VLM 环境变量：
 
 ```bash
 uv run pytest tests/integration

@@ -570,7 +570,10 @@ def derive_wall_segments(
                 edges.append((idx, "h", (a[1] + b[1]) / 2, min(a[0], b[0]), max(a[0], b[0])))
             elif dx <= 0.09 * dy:  # vertical edge
                 edges.append((idx, "v", (a[0] + b[0]) / 2, min(a[1], b[1]), max(a[1], b[1])))
-            else:
+            elif float(np.hypot(dx, dy)) >= 2.5 * t:
+                # Short diagonals are contour-rounding residue around door
+                # notches, not architecture — only walls longer than a few
+                # thicknesses can be genuine chamfers.
                 diagonals.append(
                     WallSegment(
                         start=(float(a[0]), float(a[1])),
@@ -599,7 +602,105 @@ def derive_wall_segments(
             if hi - lo >= max(6.0, 1.5 * t):
                 segments.append(_segment(axis, coord_i, lo, hi, t, (room_i, EXTERIOR)))
     resolved = [replace(seg, rooms=_resolve_connects(seg, walls, room_masks)) for seg in segments]
-    return [_center_exterior_segment(seg, room_masks) for seg in resolved]
+    centered = [_center_exterior_segment(seg, room_masks) for seg in resolved]
+    return _close_tee_junctions(_fuse_collinear_segments(centered, t), t)
+
+
+def _fuse_collinear_segments(segments: list[WallSegment], t: float) -> list[WallSegment]:
+    """Merge same-axis segments that are really one wall.
+
+    Sub-thickness face jitter in the traced polygons splits a straight wall
+    into two pieces offset by a few pixels; renderers show the offset as a
+    crack. Pieces with the same rooms on both sides, nearly the same
+    centerline (≤0.6t apart) and no real gap between them (≤1.5t) fuse into
+    one segment at the length-weighted centerline. Genuine recesses are a
+    full thickness deep or more and stay split."""
+
+    def geometry(seg: WallSegment) -> tuple[str, float, float, float] | None:
+        dx, dy = seg.end[0] - seg.start[0], seg.end[1] - seg.start[1]
+        if abs(dy) <= 0.09 * abs(dx):
+            return ("h", (seg.start[1] + seg.end[1]) / 2,
+                    min(seg.start[0], seg.end[0]), max(seg.start[0], seg.end[0]))
+        if abs(dx) <= 0.09 * abs(dy):
+            return ("v", (seg.start[0] + seg.end[0]) / 2,
+                    min(seg.start[1], seg.end[1]), max(seg.start[1], seg.end[1]))
+        return None
+
+    out: list[WallSegment] = []
+    pool = list(segments)
+    while pool:
+        seg = pool.pop(0)
+        info = geometry(seg)
+        if info is None:
+            out.append(seg)
+            continue
+        axis, fixed, lo, hi = info
+        weight = hi - lo
+        merged = True
+        while merged:
+            merged = False
+            for other in pool:
+                o_info = geometry(other)
+                if (
+                    o_info is None
+                    or o_info[0] != axis
+                    or set(other.rooms) != set(seg.rooms)
+                    or abs(o_info[1] - fixed) > 0.6 * t
+                    or o_info[2] > hi + 1.5 * t
+                    or o_info[3] < lo - 1.5 * t
+                ):
+                    continue
+                o_weight = o_info[3] - o_info[2]
+                fixed = (fixed * weight + o_info[1] * o_weight) / max(weight + o_weight, 1e-6)
+                lo, hi = min(lo, o_info[2]), max(hi, o_info[3])
+                weight += o_weight
+                pool.remove(other)
+                merged = True
+                break
+        out.append(_segment(axis, fixed, lo, hi, seg.thickness_px, seg.rooms))
+    return out
+
+
+def _close_tee_junctions(segments: list[WallSegment], t: float) -> list[WallSegment]:
+    """Extend wall ends to meet the centerline of a crossing perpendicular
+    wall. Segments derived from room-polygon edges stop at the polygon's
+    inner corners, leaving half-thickness notches at every T and L junction;
+    renderers show them as broken walls."""
+    reach = 1.4 * t
+
+    def geometry(seg: WallSegment) -> tuple[str, float, float, float] | None:
+        dx, dy = seg.end[0] - seg.start[0], seg.end[1] - seg.start[1]
+        if abs(dy) <= 0.09 * abs(dx):
+            return ("h", (seg.start[1] + seg.end[1]) / 2,
+                    min(seg.start[0], seg.end[0]), max(seg.start[0], seg.end[0]))
+        if abs(dx) <= 0.09 * abs(dy):
+            return ("v", (seg.start[0] + seg.end[0]) / 2,
+                    min(seg.start[1], seg.end[1]), max(seg.start[1], seg.end[1]))
+        return None
+
+    infos = [geometry(seg) for seg in segments]
+    out: list[WallSegment] = []
+    for seg, info in zip(segments, infos, strict=True):
+        if info is None:
+            out.append(seg)
+            continue
+        axis, fixed, lo, hi = info
+        for other in infos:
+            if other is None or other[0] == axis:
+                continue
+            o_fixed, o_lo, o_hi = other[1], other[2], other[3]
+            if not (o_lo - 0.6 * t <= fixed <= o_hi + 0.6 * t):
+                continue  # the perpendicular wall doesn't cross our line
+            if lo - reach <= o_fixed < lo:
+                lo = o_fixed
+            if hi < o_fixed <= hi + reach:
+                hi = o_fixed
+        out.append(
+            _segment(axis, fixed, lo, hi, seg.thickness_px, seg.rooms)
+            if (lo, hi) != (info[2], info[3])
+            else seg
+        )
+    return out
 
 
 def _center_exterior_segment(seg: WallSegment, room_masks: list[np.ndarray | None]) -> WallSegment:
