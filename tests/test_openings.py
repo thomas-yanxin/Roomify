@@ -317,3 +317,43 @@ def test_stub_wall_hosts_no_opening():
     cands, segments = find_openings(wx, drafts, img, door_px=40)
     assert any(s.rooms[0] == s.rooms[1] for s in segments), "expected a stub segment"
     assert not [c for c in cands if c.connects[0] == c.connects[1]]
+
+
+def test_far_side_of_a_wall_is_the_room_behind_it():
+    """A wall's far side is whatever floor is there, room included.
+
+    Leftover edges resolve their far side by probing beyond the wall, but
+    the probe only asked the building silhouette — inside/outside — so a
+    room right behind the wall came back as "unknown" whenever the two
+    polygons' edges had not paired. The opening then linked nothing, and
+    the plan came apart into rooms you cannot walk between (12 such groups
+    on the corpus).
+    """
+    from roomify.openings import WallSegment, _resolve_connects
+    from roomify.walls import WallExtraction
+
+    shape = (200, 300)
+    left = np.zeros(shape, np.uint8)
+    left[40:160, 40:140] = 255
+    right = np.zeros(shape, np.uint8)
+    right[40:160, 160:260] = 255  # wall body spans x 140..160
+    silhouette = np.zeros(shape, np.uint8)
+    silhouette[30:170, 30:270] = 255
+    masks = [left, right]
+    walls = WallExtraction(
+        solid=np.zeros(shape, np.uint8),
+        lines=np.zeros(shape, np.uint8),
+        union=np.zeros(shape, np.uint8),
+        band=(130, 185),
+        bands=[(130, 185)],
+        band_fallback=False,
+        thickness_px=10.0,
+        footprint=(30, 30, 269, 169),
+    )
+    seg = WallSegment((140.0, 50.0), (140.0, 150.0), 10.0, (0, "exterior"))
+
+    assert _resolve_connects(seg, walls, masks, silhouette) == (0, 1)
+
+    # …and a wall with nothing but building behind it is still "unknown"
+    lonely = WallSegment((140.0, 50.0), (140.0, 150.0), 10.0, (0, "exterior"))
+    assert _resolve_connects(lonely, walls, [left, None], silhouette) == (0, "unknown")

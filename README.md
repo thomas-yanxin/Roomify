@@ -122,6 +122,22 @@ CV-only parsing, and `--debug DIR` to save the masks and overlays used by the
 pipeline. Metric `nodes` and `rootNodeIds` are populated when calibration
 succeeds. If you used the pip fallback and activated `.venv`, omit `uv run`.
 
+### Reviewing results
+
+`examples/gallery.html` is a static review console: it loads whatever
+`floorplan-N.json` and its source image it finds beside itself, so a fresh
+run shows up on the next refresh and nothing has to be regenerated.
+
+```bash
+cd examples && python3 -m http.server 8000
+```
+
+Then open `http://localhost:8000/gallery.html`. It overlays room polygons,
+wall centrelines, openings and measured swing radii on the drawing, with a
+per-room deviation rail and the run's warnings and unresolved fields. (A
+`file://` page cannot read its own directory; the console also accepts the
+folder through a picker if you would rather not start a server.)
+
 ### Python
 
 ```python

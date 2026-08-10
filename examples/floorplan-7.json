@@ -2674,7 +2674,7 @@
       "protrusion_polygon_px": null,
       "protrusion_polygon_mm": null,
       "source": "cv+vlm",
-      "confidence": 0.9
+      "confidence": 0.85
     },
     {
       "id": "op_17",
@@ -2704,7 +2704,7 @@
       "protrusion_polygon_px": null,
       "protrusion_polygon_mm": null,
       "source": "cv+vlm",
-      "confidence": 0.85
+      "confidence": 0.9
     },
     {
       "id": "op_18",
@@ -2804,15 +2804,43 @@
   "elements": [
     {
       "id": "el_1",
-      "element_type": "bay_window",
+      "element_type": "single_door",
       "raw_text": null,
       "bbox_px": {
-        "x0": 49.43600000000001,
-        "y0": 604.128,
-        "x1": 122.13600000000001,
-        "y1": 631.9680000000001
+        "x0": 282.076,
+        "y0": 374.44800000000004,
+        "x1": 325.696,
+        "y1": 402.28799999999995
+      },
+      "room_id": "room_1",
+      "source": "vlm",
+      "confidence": 0.5
+    },
+    {
+      "id": "el_2",
+      "element_type": "single_door",
+      "raw_text": null,
+      "bbox_px": {
+        "x0": 78.516,
+        "y0": 374.44800000000004,
+        "x1": 136.676,
+        "y1": 402.28799999999995
       },
       "room_id": null,
+      "source": "vlm",
+      "confidence": 0.5
+    },
+    {
+      "id": "el_3",
+      "element_type": "sliding_window",
+      "raw_text": null,
+      "bbox_px": {
+        "x0": 478.36600000000004,
+        "y0": 374.44800000000004,
+        "x1": 514.716,
+        "y1": 402.28799999999995
+      },
+      "room_id": "room_7",
       "source": "vlm",
       "confidence": 0.5
     }
@@ -2830,7 +2858,17 @@
     },
     {
       "code": "opening_geometry_is_bbox",
-      "message": "a bay_window was found only by the VLM; it is reported under elements with approximate bounding-box geometry",
+      "message": "a single_door was found only by the VLM; it is reported under elements with approximate bounding-box geometry",
+      "ref": null
+    },
+    {
+      "code": "opening_geometry_is_bbox",
+      "message": "a single_door was found only by the VLM; it is reported under elements with approximate bounding-box geometry",
+      "ref": null
+    },
+    {
+      "code": "opening_geometry_is_bbox",
+      "message": "a sliding_window was found only by the VLM; it is reported under elements with approximate bounding-box geometry",
       "ref": null
     },
     {
@@ -5574,7 +5612,7 @@
               "protrusion_polygon_px": null,
               "protrusion_polygon_mm": null,
               "source": "cv+vlm",
-              "confidence": 0.9
+              "confidence": 0.85
             },
             {
               "id": "op_17",
@@ -5604,7 +5642,7 @@
               "protrusion_polygon_px": null,
               "protrusion_polygon_mm": null,
               "source": "cv+vlm",
-              "confidence": 0.85
+              "confidence": 0.9
             },
             {
               "id": "op_18",
@@ -5704,15 +5742,43 @@
           "elements": [
             {
               "id": "el_1",
-              "element_type": "bay_window",
+              "element_type": "single_door",
               "raw_text": null,
               "bbox_px": {
-                "x0": 49.43600000000001,
-                "y0": 604.128,
-                "x1": 122.13600000000001,
-                "y1": 631.9680000000001
+                "x0": 282.076,
+                "y0": 374.44800000000004,
+                "x1": 325.696,
+                "y1": 402.28799999999995
+              },
+              "room_id": "room_1",
+              "source": "vlm",
+              "confidence": 0.5
+            },
+            {
+              "id": "el_2",
+              "element_type": "single_door",
+              "raw_text": null,
+              "bbox_px": {
+                "x0": 78.516,
+                "y0": 374.44800000000004,
+                "x1": 136.676,
+                "y1": 402.28799999999995
               },
               "room_id": null,
+              "source": "vlm",
+              "confidence": 0.5
+            },
+            {
+              "id": "el_3",
+              "element_type": "sliding_window",
+              "raw_text": null,
+              "bbox_px": {
+                "x0": 478.36600000000004,
+                "y0": 374.44800000000004,
+                "x1": 514.716,
+                "y1": 402.28799999999995
+              },
+              "room_id": "room_7",
               "source": "vlm",
               "confidence": 0.5
             }
@@ -5730,7 +5796,17 @@
             },
             {
               "code": "opening_geometry_is_bbox",
-              "message": "a bay_window was found only by the VLM; it is reported under elements with approximate bounding-box geometry",
+              "message": "a single_door was found only by the VLM; it is reported under elements with approximate bounding-box geometry",
+              "ref": null
+            },
+            {
+              "code": "opening_geometry_is_bbox",
+              "message": "a single_door was found only by the VLM; it is reported under elements with approximate bounding-box geometry",
+              "ref": null
+            },
+            {
+              "code": "opening_geometry_is_bbox",
+              "message": "a sliding_window was found only by the VLM; it is reported under elements with approximate bounding-box geometry",
               "ref": null
             },
             {

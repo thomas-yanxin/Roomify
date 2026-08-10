@@ -662,6 +662,17 @@ def _both_sides_indoor(
 # thin partitions, which needs a corpus that draws them at more than 4px.
 MAX_INTERIOR_SPAN_MM = 2500.0
 
+# A door is something you walk through, so its width is bounded by what a
+# leaf can be built as — four sliding leaves at ~900mm is the widest thing
+# in the domain. Past that the drawing is a glazed facade or a whole wall
+# run the scan merged, not a door: the corpus's real balcony doors stop at
+# 2957mm and the next one is 4085mm, so the bound sits in an empty band.
+# Single-leaf width is NOT bounded here — the measurement is the break in
+# the wall, frame and reveal included, and single_door widths run
+# continuously from 1112 to 1375mm with no gap to cut at.
+MAX_DOOR_SPAN_MM = 3500.0
+_WALK_THROUGH = {"single_door", "double_door", "sliding_door", "folding_door"}
+
 
 def merge_openings(
     candidates: list[OpeningCandidate],
@@ -743,22 +754,29 @@ def merge_openings(
             )
             element_type = "sliding_door"
             confidence = min(confidence, 0.7)
-        if (
-            scale is not None
-            and element_type != "unknown_symbol"
-            and _both_sides_indoor(cand.connects, rooms or [])
-        ):
+        if scale is not None and element_type != "unknown_symbol":
             per_mm = scale.px_per_mm_x if cand.axis == "h" else scale.px_per_mm_y
             span_mm = cand.width_px / per_mm if per_mm > 0 else 0.0
-            if span_mm > MAX_INTERIOR_SPAN_MM:
+            reason = None
+            if element_type in _WALK_THROUGH and span_mm > MAX_DOOR_SPAN_MM:
+                reason = (
+                    f"spans {span_mm:.0f}mm — wider than any door leaf can be built, "
+                    "so the drawing is a glazed facade or a merged wall run"
+                )
+            elif span_mm > MAX_INTERIOR_SPAN_MM and _both_sides_indoor(
+                cand.connects, rooms or []
+            ):
+                reason = (
+                    f"spans {span_mm:.0f}mm between two indoor rooms — too wide for "
+                    "one opening, and a partition the wall mask missed reads identically"
+                )
+            if reason is not None:
                 warnings.append(
                     ParseWarning(
-                        code="interior_span_implausible",
+                        code="opening_span_implausible",
                         message=(
-                            f"candidate {cand.marker} spans {span_mm:.0f}mm between two "
-                            f"indoor rooms and was read as {element_type}; too wide for "
-                            "one opening, and a partition the wall mask missed reads "
-                            "identically — class left unresolved"
+                            f"candidate {cand.marker} was read as {element_type} but it "
+                            f"{reason}; class left unresolved"
                         ),
                         ref=cand.marker,
                     )
@@ -768,8 +786,7 @@ def merge_openings(
                 unresolved.append(
                     Unresolved(
                         path=f"openings/{cand.marker}/element_type",
-                        reason="interior span too wide to be one opening; "
-                        "the wall mask cannot resolve a thin partition here",
+                        reason=f"measured span contradicts the reading: {reason}",
                     )
                 )
         if element_type in _SWINGING and cand.arc is None:

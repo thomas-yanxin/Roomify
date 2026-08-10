@@ -119,6 +119,20 @@ uv run roomify examples/floorplan-1.png -o plan.json
 米制 `nodes` 和 `rootNodeIds`。若使用 pip 备用流程并已激活 `.venv`，请省略
 `uv run`。
 
+### 审查结果
+
+`examples/gallery.html` 是一个静态审查台：它加载同目录下发现的
+`floorplan-N.json` 及其源图，所以跑完新的 case 只要刷新页面，不需要重新生成任何东西。
+
+```bash
+cd examples && python3 -m http.server 8000
+```
+
+然后打开 `http://localhost:8000/gallery.html`。它把房间多边形、墙中心线、门窗
+和实测的门扇扫掠半径叠加在图纸上，右侧给出每个房间的面积偏差条以及本次运行的
+警告和未决项。（`file://` 页面无法读取自身目录；不想起服务的话，审查台也支持
+直接选择 `examples/` 目录。）
+
 ### Python
 
 ```python

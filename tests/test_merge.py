@@ -591,7 +591,7 @@ def test_wide_interior_span_is_left_unresolved_not_asserted():
     assert drafts[0].element_type == "unknown_symbol"
     assert drafts[0].width_px == 150.0  # the measured span is still reported
     assert drafts[0].confidence <= 0.3
-    assert [w.code for w in warnings] == ["interior_span_implausible"]
+    assert [w.code for w in warnings] == ["opening_span_implausible"]
     assert [u.path for u in unresolved] == ["openings/A/element_type"]
 
     # a door-width break on the same wall is untouched
@@ -606,4 +606,56 @@ def test_wide_interior_span_is_left_unresolved_not_asserted():
         [_Cand(connects=(0, "exterior"))], read, (1000, 1000), indoor, scale
     )
     assert drafts[0].element_type == "passage"
+    assert warnings == []
+
+
+def test_door_wider_than_a_leaf_can_be_is_not_asserted_as_a_door():
+    """A 6.5m "sliding door" is a glazed facade, whatever the crop looks like."""
+    from dataclasses import dataclass
+
+    from roomify.merge import ScaleDraft, merge_openings
+    from roomify.vlm import OpeningsRead
+
+    @dataclass
+    class _Cand:
+        marker: str = "A"
+        bbox: tuple = (100.0, 200.0, 400.0, 210.0)
+        center: tuple = (250.0, 205.0)
+        axis: str = "h"
+        width_px: float = 300.0  # 6000mm at 0.05 px/mm
+        kind_hint: str = "doorlike"
+        connects: tuple = (0, "exterior")
+        wall_index: int = 0
+        arc: object = None
+
+    scale = ScaleDraft(0.05, 0.05, "printed_areas", "medium", 0.05, 4, 0)
+
+    def parse(element_type, **kw):
+        read = OpeningsRead.model_validate(
+            {
+                "candidates": [
+                    {"marker": "A", "element_type": element_type, "raw_text": None,
+                     "confidence": 0.9, "is_real": True}
+                ],
+                "extra_elements": [],
+            }
+        )
+        rooms = [_draft(1000.0, None, name="阳台")]
+        rooms[0].room_type = "balcony"
+        return merge_openings([_Cand(**kw)], read, (1000, 1000), rooms, scale)
+
+    drafts, _, warnings, unresolved = parse("sliding_door")
+    assert drafts[0].element_type == "unknown_symbol"
+    assert drafts[0].width_px == 300.0  # the span is still measured and reported
+    assert [w.code for w in warnings] == ["opening_span_implausible"]
+    assert [u.path for u in unresolved] == ["openings/A/element_type"]
+
+    # the same span read as glazing is entirely plausible and stands
+    drafts, _, warnings, _ = parse("floor_to_ceiling_window")
+    assert drafts[0].element_type == "floor_to_ceiling_window"
+    assert warnings == []
+
+    # and a normal balcony door is untouched
+    drafts, _, warnings, _ = parse("sliding_door", width_px=140.0)  # 2800mm
+    assert drafts[0].element_type == "sliding_door"
     assert warnings == []

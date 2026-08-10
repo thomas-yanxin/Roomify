@@ -140,7 +140,7 @@
       "area_deviation": 0.05137336274944957,
       "area_deviation_flag": false,
       "source": "cv+vlm",
-      "confidence": 0.98
+      "confidence": 1.0
     },
     {
       "id": "room_2",
@@ -202,7 +202,7 @@
       "area_deviation": -0.14894314088293828,
       "area_deviation_flag": true,
       "source": "cv+vlm",
-      "confidence": 0.98
+      "confidence": 1.0
     },
     {
       "id": "room_3",
@@ -264,7 +264,7 @@
       "area_deviation": 0.0058613686167441744,
       "area_deviation_flag": false,
       "source": "cv+vlm",
-      "confidence": 0.98
+      "confidence": 1.0
     },
     {
       "id": "room_4",
@@ -326,7 +326,7 @@
       "area_deviation": 0.02073430837161655,
       "area_deviation_flag": false,
       "source": "cv+vlm",
-      "confidence": 0.98
+      "confidence": 1.0
     },
     {
       "id": "room_5",
@@ -458,7 +458,7 @@
       "area_deviation": null,
       "area_deviation_flag": false,
       "source": "cv+vlm",
-      "confidence": 0.85
+      "confidence": 0.8
     }
   ],
   "walls": [
@@ -1171,7 +1171,7 @@
     },
     {
       "id": "op_8",
-      "element_type": "window",
+      "element_type": "casement_window",
       "raw_text": null,
       "bbox_px": {
         "x0": 335.0,
@@ -1197,11 +1197,11 @@
       "protrusion_polygon_px": null,
       "protrusion_polygon_mm": null,
       "source": "cv+vlm",
-      "confidence": 0.9
+      "confidence": 0.85
     },
     {
       "id": "op_9",
-      "element_type": "window",
+      "element_type": "sliding_window",
       "raw_text": null,
       "bbox_px": {
         "x0": 391.0,
@@ -1233,12 +1233,12 @@
   "elements": [
     {
       "id": "el_1",
-      "element_type": "fixed_window",
+      "element_type": "window",
       "raw_text": null,
       "bbox_px": {
-        "x0": 354.776,
+        "x0": 357.68399999999997,
         "y0": 111.108,
-        "x1": 383.856,
+        "x1": 386.764,
         "y1": 128.838
       },
       "room_id": null,
@@ -1259,7 +1259,7 @@
     },
     {
       "code": "opening_geometry_is_bbox",
-      "message": "a fixed_window was found only by the VLM; it is reported under elements with approximate bounding-box geometry",
+      "message": "a window was found only by the VLM; it is reported under elements with approximate bounding-box geometry",
       "ref": null
     },
     {
@@ -1433,7 +1433,7 @@
               "area_deviation": 0.05137336274944957,
               "area_deviation_flag": false,
               "source": "cv+vlm",
-              "confidence": 0.98
+              "confidence": 1.0
             },
             {
               "id": "room_2",
@@ -1495,7 +1495,7 @@
               "area_deviation": -0.14894314088293828,
               "area_deviation_flag": true,
               "source": "cv+vlm",
-              "confidence": 0.98
+              "confidence": 1.0
             },
             {
               "id": "room_3",
@@ -1557,7 +1557,7 @@
               "area_deviation": 0.0058613686167441744,
               "area_deviation_flag": false,
               "source": "cv+vlm",
-              "confidence": 0.98
+              "confidence": 1.0
             },
             {
               "id": "room_4",
@@ -1619,7 +1619,7 @@
               "area_deviation": 0.02073430837161655,
               "area_deviation_flag": false,
               "source": "cv+vlm",
-              "confidence": 0.98
+              "confidence": 1.0
             },
             {
               "id": "room_5",
@@ -1751,7 +1751,7 @@
               "area_deviation": null,
               "area_deviation_flag": false,
               "source": "cv+vlm",
-              "confidence": 0.85
+              "confidence": 0.8
             }
           ],
           "walls": [
@@ -2464,7 +2464,7 @@
             },
             {
               "id": "op_8",
-              "element_type": "window",
+              "element_type": "casement_window",
               "raw_text": null,
               "bbox_px": {
                 "x0": 335.0,
@@ -2490,11 +2490,11 @@
               "protrusion_polygon_px": null,
               "protrusion_polygon_mm": null,
               "source": "cv+vlm",
-              "confidence": 0.9
+              "confidence": 0.85
             },
             {
               "id": "op_9",
-              "element_type": "window",
+              "element_type": "sliding_window",
               "raw_text": null,
               "bbox_px": {
                 "x0": 391.0,
@@ -2526,12 +2526,12 @@
           "elements": [
             {
               "id": "el_1",
-              "element_type": "fixed_window",
+              "element_type": "window",
               "raw_text": null,
               "bbox_px": {
-                "x0": 354.776,
+                "x0": 357.68399999999997,
                 "y0": 111.108,
-                "x1": 383.856,
+                "x1": 386.764,
                 "y1": 128.838
               },
               "room_id": null,
@@ -2552,7 +2552,7 @@
             },
             {
               "code": "opening_geometry_is_bbox",
-              "message": "a fixed_window was found only by the VLM; it is reported under elements with approximate bounding-box geometry",
+              "message": "a window was found only by the VLM; it is reported under elements with approximate bounding-box geometry",
               "ref": null
             },
             {
@@ -3376,7 +3376,7 @@
       "metadata": {
         "roomifyId": "op_8"
       },
-      "windowType": "fixed",
+      "windowType": "casement",
       "sill": true,
       "position": [
         1.9457941176470586,
@@ -3401,7 +3401,7 @@
       "metadata": {
         "roomifyId": "op_9"
       },
-      "windowType": "fixed",
+      "windowType": "sliding",
       "sill": true,
       "position": [
         1.3684705882352939,

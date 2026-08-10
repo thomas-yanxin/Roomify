@@ -185,6 +185,14 @@ def _scan_segment(
         else:
             bbox = (float(c - t / 2), float(a), float(c + t / 2), float(b))
             center = (float(c), center_along)
+        # One segment can have different neighbours along its length (a wall
+        # that runs past two rooms), so each opening asks at its own centre
+        # rather than inheriting the midpoint's answer.
+        here = (
+            connects
+            if all(isinstance(side, int) for side in connects)
+            else _resolve_connects(seg, walls, room_masks, silhouette, center)
+        )
         out.append(
             OpeningCandidate(
                 marker="",
@@ -193,7 +201,7 @@ def _scan_segment(
                 axis=axis,
                 width_px=float(run_hi - run_lo + 1),
                 kind_hint="doorlike",
-                connects=connects,
+                connects=here,
                 wall_index=seg_index,
                 arc=None,
             )
@@ -266,17 +274,26 @@ def _resolve_connects(
     walls: WallExtraction,
     room_masks: list[np.ndarray | None],
     silhouette: np.ndarray,
+    at: tuple[float, float] | None = None,
 ) -> tuple[int | str, int | str]:
     """Room indices pass through; the non-room side of a leftover edge is
-    "exterior" only when it actually leaves the BUILDING — otherwise it is
-    circulation space no room polygon covered, reported as "unknown".
+    resolved by probing beyond the wall at ``at`` (the segment's midpoint by
+    default, an opening's own centre when one is being classified).
 
-    Outside-ness is the filled wall silhouette, never its bounding box: an
-    L-shaped, notched or diagonal footprint keeps most of its facade well
-    inside that box, so a box test called the open air behind those walls
-    "unknown" (measured: 33 of fp6's 49 walls, and 94 of 268 opening sides
-    corpus-wide). The mislabel then reaches the classifier prompt as the
-    wrong adjacency prior — the strongest one it has.
+    The far side is whatever floor is actually there. A ROOM behind the wall
+    is the answer even when the two polygons' edges never paired — offset
+    faces, a chamfered neighbour, a wall thicker than the pairing window all
+    leave a one-room leftover edge, and calling its far side "unknown" cuts
+    the doorway's link. The plan then falls apart into groups of rooms with
+    no path between them (12 such groups on the corpus, one plan split 7/7),
+    which no dwelling can be.
+
+    Failing that, outside-ness is the filled wall silhouette, never its
+    bounding box: an L-shaped, notched or diagonal footprint keeps most of
+    its facade well inside that box, so a box test called the open air behind
+    those walls "unknown" (33 of fp6's 49 walls). Either mislabel also
+    reaches the classifier prompt as the wrong adjacency prior — the
+    strongest one it has.
     """
     a, b = seg.rooms
     if isinstance(a, int) and isinstance(b, int):
@@ -284,20 +301,30 @@ def _resolve_connects(
     room = a if isinstance(a, int) else b
     mask = room_masks[room] if isinstance(room, int) else None
     (sx0, sy0), (sx1, sy1) = seg.start, seg.end
-    mid = ((sx0 + sx1) / 2, (sy0 + sy1) / 2)
-    probe_distance = 2.5 * seg.thickness_px
+    if at is None:
+        at = ((sx0 + sx1) / 2, (sy0 + sy1) / 2)
     outward = _room_outward_normal(seg, mask)
-    if outward is None:
-        far: int | str = UNKNOWN
-    else:
-        fx, fy = (
-            mid[0] + outward[0] * probe_distance,
-            mid[1] + outward[1] * probe_distance,
-        )
-        xi, yi = int(round(fx)), int(round(fy))
-        h, w = silhouette.shape
-        inside_building = 0 <= yi < h and 0 <= xi < w and silhouette[yi, xi] > 0
-        far = UNKNOWN if inside_building else EXTERIOR
+    far: int | str = UNKNOWN
+    if outward is not None:
+        # The room polygons trace inner faces, so the neighbour's floor
+        # starts about one wall thickness out; look no further, or a probe
+        # jumps a narrow closet into the room beyond it.
+        for reach in (1.5, 2.5):
+            probe = (
+                at[0] + outward[0] * reach * seg.thickness_px,
+                at[1] + outward[1] * reach * seg.thickness_px,
+            )
+            neighbour = _room_at(room_masks, probe)
+            if neighbour is not None and neighbour != room:
+                far = neighbour
+                break
+        else:
+            fx = at[0] + outward[0] * 2.5 * seg.thickness_px
+            fy = at[1] + outward[1] * 2.5 * seg.thickness_px
+            xi, yi = int(round(fx)), int(round(fy))
+            h, w = silhouette.shape
+            inside_building = 0 <= yi < h and 0 <= xi < w and silhouette[yi, xi] > 0
+            far = UNKNOWN if inside_building else EXTERIOR
     return (room, far) if isinstance(seg.rooms[0], int) else (far, room)
 
 
