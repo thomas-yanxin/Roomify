@@ -124,6 +124,105 @@ def find_openings(
     return out, segments
 
 
+_OPEN_ZONE_TYPES = {
+    "living_room",
+    "living_dining",
+    "dining_room",
+    "kitchen",
+    "hallway",
+    "entrance",
+    "study",
+    "closet",
+    "storage",
+    "multipurpose",
+}
+
+
+def find_zone_passages(
+    walls: WallExtraction,
+    rooms: list[RoomDraft],
+    segments: list[WallSegment],
+) -> list[OpeningCandidate]:
+    """Turn drawn dashed room-zone boundaries into explicit passages.
+
+    Room extraction deliberately seals these dividers so each labelled zone
+    can be measured, while wall extraction deliberately removes them because
+    they are not structure.  Preserve the missing topological fact here: the
+    two compatible zones remain openly connected.
+    """
+    if walls.zones is None:
+        return []
+    masks = _room_masks(rooms, walls.zones.shape)
+    radius = max(3, int(round(1.5 * walls.thickness_px)))
+    kernel = np.ones((2 * radius + 1, 2 * radius + 1), np.uint8)
+    near = [cv2.dilate(mask, kernel) if mask is not None else None for mask in masks]
+    physical_pairs = {
+        frozenset((a, b))
+        for segment in segments
+        for a, b in [segment.rooms]
+        if isinstance(a, int) and isinstance(b, int) and a != b
+    }
+    min_length = max(12, int(round(2 * walls.thickness_px)))
+    passages: list[OpeningCandidate] = []
+    for i, room in enumerate(rooms):
+        near_i = near[i]
+        if near_i is None:
+            continue
+        for j in range(i + 1, len(rooms)):
+            near_j = near[j]
+            if (
+                near_j is None
+                or not (room.zone_bounded or rooms[j].zone_bounded)
+                or frozenset((i, j)) in physical_pairs
+                or not _open_zone_types_compatible(room.room_type, rooms[j].room_type)
+            ):
+                continue
+            bridge = cv2.bitwise_and(walls.zones, cv2.bitwise_and(near_i, near_j))
+            count, _labels, stats, centroids = cv2.connectedComponentsWithStats(
+                bridge, connectivity=8
+            )
+            choices = [
+                k
+                for k in range(1, count)
+                if max(stats[k, cv2.CC_STAT_WIDTH], stats[k, cv2.CC_STAT_HEIGHT])
+                >= min_length
+            ]
+            if not choices:
+                continue
+            k = max(
+                choices,
+                key=lambda n: max(
+                    stats[n, cv2.CC_STAT_WIDTH], stats[n, cv2.CC_STAT_HEIGHT]
+                ),
+            )
+            x, y, width, height = (int(v) for v in stats[k, :4])
+            axis = "h" if width >= height else "v"
+            passages.append(
+                OpeningCandidate(
+                    marker=f"zone_{i + 1}_{j + 1}",
+                    bbox=(float(x), float(y), float(x + width), float(y + height)),
+                    center=(float(centroids[k, 0]), float(centroids[k, 1])),
+                    axis=axis,
+                    width_px=float(max(width, height)),
+                    kind_hint="doorlike",
+                    connects=(i, j),
+                    wall_index=-1,
+                    arc=None,
+                )
+            )
+    return passages
+
+
+def _open_zone_types_compatible(left: str, right: str) -> bool:
+    if left == right == "bathroom":  # wet/dry bathroom zones
+        return True
+    if left == right == "bedroom":
+        return False
+    if left == "bedroom" or right == "bedroom":
+        return ({left, right} - {"bedroom"}).issubset({"closet", "study", "storage"})
+    return left in _OPEN_ZONE_TYPES and right in _OPEN_ZONE_TYPES
+
+
 # ------------------------------------------------------------- wall scanning
 
 

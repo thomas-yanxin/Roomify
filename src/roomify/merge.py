@@ -633,6 +633,15 @@ class ElementDraft:
 
 # Types whose leaves swing on a hinge — the only ones arc evidence applies to.
 _SWINGING = {"single_door", "double_door", "folding_door"}
+_WINDOWS = {
+    "window",
+    "casement_window",
+    "sliding_window",
+    "fixed_window",
+    "bay_window",
+    "floor_to_ceiling_window",
+    "blind_window",
+}
 # Legend elements that legitimately stand free of walls; anything else the
 # VLM reports as an "extra" is an opening claim without usable geometry.
 _FREE_STANDING = {"stair", "railing", "elevator", "escalator",
@@ -644,9 +653,19 @@ def _both_sides_indoor(
 ) -> bool:
     return all(
         isinstance(side, int)
-        and side < len(rooms)
+        and 0 <= side < len(rooms)
         and rooms[side].room_type not in OUTDOOR_ROOM_TYPES
         for side in connects
+    )
+
+
+def _window_conflicts_with_privacy_room(
+    connects: tuple[int | str, int | str], rooms: list[RoomDraft]
+) -> bool:
+    return _both_sides_indoor(connects, rooms) and any(
+        rooms[side].room_type in {"bedroom", "bathroom"}
+        for side in connects
+        if isinstance(side, int)
     )
 
 
@@ -755,6 +774,30 @@ def merge_openings(
             )
             element_type = "sliding_door"
             confidence = min(confidence, 0.7)
+        elif (
+            source == "cv+vlm"
+            and element_type in _WINDOWS
+            and _window_conflicts_with_privacy_room(cand.connects, rooms or [])
+        ):
+            warnings.append(
+                ParseWarning(
+                    code="opening_habitability_conflict",
+                    message=(
+                        f"candidate {cand.marker} was read as {element_type} between "
+                        "indoor rooms including a bedroom or bathroom; class left "
+                        "unresolved instead of asserting an interior privacy window"
+                    ),
+                    ref=cand.marker,
+                )
+            )
+            element_type = "unknown_symbol"
+            confidence = min(confidence, 0.3)
+            unresolved.append(
+                Unresolved(
+                    path=f"openings/{cand.marker}/element_type",
+                    reason="indoor window reading conflicts with residential privacy",
+                )
+            )
         if scale is not None and element_type != "unknown_symbol":
             per_mm = scale.px_per_mm_x if cand.axis == "h" else scale.px_per_mm_y
             span_mm = cand.width_px / per_mm if per_mm > 0 else 0.0

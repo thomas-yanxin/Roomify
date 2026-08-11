@@ -506,6 +506,65 @@ def test_sliding_window_between_indoor_rooms_is_a_sliding_door():
     assert warnings == []
 
 
+def test_window_into_a_privacy_room_is_left_unresolved():
+    """Do not assert a bedroom/bathroom window as an indoor opening."""
+    from dataclasses import dataclass
+
+    from roomify.merge import merge_openings
+    from roomify.vlm import OpeningsRead
+
+    @dataclass
+    class _Cand:
+        marker: str = "A"
+        bbox: tuple = (100.0, 200.0, 160.0, 210.0)
+        center: tuple = (130.0, 205.0)
+        axis: str = "h"
+        width_px: float = 60.0
+        kind_hint: str = "window"
+        connects: tuple = (0, 1)
+        wall_index: int = 0
+        arc: object = None
+
+    def classify(element_type):
+        return OpeningsRead.model_validate(
+            {
+                "candidates": [
+                    {
+                        "marker": "A",
+                        "element_type": element_type,
+                        "raw_text": None,
+                        "confidence": 0.9,
+                        "is_real": True,
+                    }
+                ],
+                "extra_elements": [],
+            }
+        )
+
+    rooms = [_draft(1000.0, None, name="客厅"), _draft(1000.0, None, name="卧室")]
+    rooms[0].room_type = "living_room"
+    rooms[1].room_type = "bedroom"
+    drafts, _, warnings, unresolved = merge_openings(
+        [_Cand()], classify("fixed_window"), (1000, 1000), rooms
+    )
+    assert drafts[0].element_type == "unknown_symbol"
+    assert [warning.code for warning in warnings] == ["opening_habitability_conflict"]
+    assert [item.path for item in unresolved] == ["openings/A/element_type"]
+
+    # Sliding symbols have a deterministic indoor interpretation: a door.
+    drafts, _, _, _ = merge_openings(
+        [_Cand()], classify("sliding_window"), (1000, 1000), rooms
+    )
+    assert drafts[0].element_type == "sliding_door"
+
+    # A serving window between kitchen and living space remains possible.
+    rooms[1].room_type = "kitchen"
+    drafts, _, warnings, _ = merge_openings(
+        [_Cand()], classify("fixed_window"), (1000, 1000), rooms
+    )
+    assert drafts[0].element_type == "fixed_window"
+    assert warnings == []
+
 def test_extra_room_with_no_free_floor_left_is_not_a_room():
     """Open-plan zones come back as "unmarkered rooms" and must not be emitted.
 

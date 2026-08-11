@@ -72,3 +72,36 @@ def test_unresolved_paths_use_final_object_ids(tmp_path, monkeypatch):
     for item in plan.unresolved:
         collection, object_id, _ = item.path.split("/", 2)
         assert object_id in ids[collection]
+
+
+def test_habitability_audit_reports_only_unresolved_topology():
+    from types import SimpleNamespace
+
+    from roomify.pipeline import _habitability_warnings
+
+    rooms = [
+        SimpleNamespace(id="living", name="客厅", room_type="living_room"),
+        SimpleNamespace(id="bedroom", name="卧室", room_type="bedroom"),
+        SimpleNamespace(id="balcony", name="阳台", room_type="balcony"),
+    ]
+    warnings = _habitability_warnings(rooms, [])
+    assert [warning.code for warning in warnings] == [
+        "dwelling_circulation_disconnected",
+        "balcony_access_unresolved",
+    ]
+
+    openings = [
+        SimpleNamespace(
+            id="op_1", element_type="passage", connects=("living", "bedroom")
+        ),
+        SimpleNamespace(
+            id="op_2", element_type="sliding_door", connects=("bedroom", "balcony")
+        ),
+    ]
+    assert _habitability_warnings(rooms, openings) == []
+
+    openings.append(
+        SimpleNamespace(id="op_3", element_type="window", connects=("living", "unknown"))
+    )
+    warnings = _habitability_warnings(rooms, openings)
+    assert [warning.code for warning in warnings] == ["opening_adjacency_unresolved"]

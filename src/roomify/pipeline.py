@@ -30,7 +30,12 @@ from roomify.merge import (
     merge_rooms,
     reconcile_rooms,
 )
-from roomify.openings import WallSegment, find_openings, measure_bay_protrusion
+from roomify.openings import (
+    WallSegment,
+    find_openings,
+    find_zone_passages,
+    measure_bay_protrusion,
+)
 from roomify.rooms import detect_rooms, uncovered_floor
 from roomify.schema import (
     DEFAULT_DOOR_HEIGHT_MM,
@@ -314,6 +319,40 @@ def parse(
     )
     warnings += op_warnings
     unresolved += op_unresolved
+    connected_pairs = {
+        frozenset(op.connects)
+        for op in opening_drafts
+        if _is_walk_through(op.element_type)
+        and all(isinstance(side, int) for side in op.connects)
+    }
+    for zone in find_zone_passages(walls, rooms, segments):
+        if frozenset(zone.connects) in connected_pairs:
+            continue
+        opening_drafts.append(
+            OpeningDraft(
+                marker=zone.marker,
+                element_type="passage",
+                raw_text=None,
+                bbox=zone.bbox,
+                center=zone.center,
+                axis=zone.axis,
+                width_px=zone.width_px,
+                wall_index=-1,
+                connects=zone.connects,
+                swing=None,
+                hinge=None,
+                source="cv",
+                confidence=0.7,
+            )
+        )
+        connected_pairs.add(frozenset(zone.connects))
+        warnings.append(
+            ParseWarning(
+                code="open_zone_connection",
+                message="dashed functional divider retained as an open passage, not a wall",
+                ref=zone.marker,
+            )
+        )
     warnings.append(
         ParseWarning(
             code="vertical_defaults_assumed",
@@ -709,6 +748,8 @@ def _assemble(
             north += float(np.degrees(np.arctan2(back[1, 0], back[0, 0])))
         north %= 360.0
 
+    warnings.extend(_habitability_warnings(schema_rooms, schema_openings))
+
     return FloorPlan(
         source_file=src.source_file,
         source_sha256=src.sha256,
@@ -725,3 +766,110 @@ def _assemble(
         warnings=warnings,
         unresolved=unresolved,
     )
+
+
+_CRITICAL_ROOM_TYPES = {
+    "living_room",
+    "living_dining",
+    "dining_room",
+    "bedroom",
+    "kitchen",
+    "bathroom",
+    "hallway",
+    "entrance",
+    "study",
+    "multipurpose",
+}
+
+
+def _is_walk_through(element_type: str) -> bool:
+    return element_type == "passage" or element_type.endswith("_door")
+
+
+def _habitability_warnings(rooms: list[Room], openings: list[Opening]) -> list[ParseWarning]:
+    """Report topology contradictions without inventing missing doors."""
+    room_by_id = {room.id: room for room in rooms}
+    indoor = {
+        room.id for room in rooms if room.room_type not in OUTDOOR_ROOM_TYPES
+    }
+    graph: dict[str, set[str]] = {room_id: set() for room_id in indoor}
+    for opening in openings:
+        if not _is_walk_through(opening.element_type) or opening.connects is None:
+            continue
+        left, right = opening.connects
+        if left in graph and right in graph:
+            graph[left].add(right)
+            graph[right].add(left)
+
+    components: list[set[str]] = []
+    unseen = set(indoor)
+    while unseen:
+        component: set[str] = set()
+        stack = [unseen.pop()]
+        while stack:
+            room_id = stack.pop()
+            component.add(room_id)
+            neighbours = graph[room_id] & unseen
+            unseen -= neighbours
+            stack.extend(neighbours)
+        if any(room_by_id[room_id].room_type in _CRITICAL_ROOM_TYPES for room_id in component):
+            components.append(component)
+
+    warnings: list[ParseWarning] = []
+    if len(components) > 1:
+        order = {room.id: i for i, room in enumerate(rooms)}
+        groups = [
+            ", ".join(
+                room_by_id[room_id].name or room_id
+                for room_id in sorted(component, key=order.__getitem__)
+                if room_by_id[room_id].room_type in _CRITICAL_ROOM_TYPES
+            )
+            for component in components
+        ]
+        groups.sort()
+        warnings.append(
+            ParseWarning(
+                code="dwelling_circulation_disconnected",
+                message=(
+                    f"walk-through openings leave occupied rooms in {len(groups)} "
+                    f"disconnected groups: {' | '.join(groups)}"
+                ),
+            )
+        )
+
+    accessible_balconies = {
+        side
+        for opening in openings
+        if _is_walk_through(opening.element_type) and opening.connects is not None
+        for side, other in (opening.connects, opening.connects[::-1])
+        if side in room_by_id
+        and room_by_id[side].room_type == "balcony"
+        and other in indoor
+    }
+    inaccessible = [
+        room.name or room.id
+        for room in rooms
+        if room.room_type == "balcony" and room.id not in accessible_balconies
+    ]
+    if inaccessible:
+        warnings.append(
+            ParseWarning(
+                code="balcony_access_unresolved",
+                message=f"no indoor door or passage was found for: {', '.join(inaccessible)}",
+            )
+        )
+
+    unknown = [
+        opening.id
+        for opening in openings
+        if opening.connects is not None and "unknown" in opening.connects
+    ]
+    if unknown:
+        warnings.append(
+            ParseWarning(
+                code="opening_adjacency_unresolved",
+                message=f"{len(unknown)} openings have an unresolved indoor side",
+                ref=unknown[0],
+            )
+        )
+    return warnings

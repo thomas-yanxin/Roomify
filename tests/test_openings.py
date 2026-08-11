@@ -8,6 +8,7 @@ from roomify.openings import (
     WallSegment,
     derive_wall_segments,
     find_openings,
+    find_zone_passages,
     measure_bay_protrusion,
 )
 from roomify.rooms import detect_rooms
@@ -385,3 +386,15 @@ def test_dashed_zone_divider_is_not_reported_as_a_wall():
 
     # the real walls around the space are untouched
     assert len(segments) >= 4
+
+    left, right = sorted(drafts, key=lambda room: room.seed[0])
+    left.room_type = "living_room"
+    right.room_type = "dining_room"
+    passages = find_zone_passages(wx, drafts, segments)
+    assert len(passages) == 1
+    assert set(passages[0].connects) == {0, 1}
+    assert passages[0].width_px > 200
+
+    # A dashed line does not make private rooms an open-plan pair.
+    right.room_type = "bedroom"
+    assert find_zone_passages(wx, drafts, segments) == []
