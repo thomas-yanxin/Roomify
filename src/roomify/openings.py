@@ -25,6 +25,7 @@ from dataclasses import dataclass, replace
 
 import cv2
 import numpy as np
+from shapely.geometry import Polygon, box
 
 from roomify.merge import RoomDraft
 from roomify.rooms import building_silhouette
@@ -48,6 +49,7 @@ MIN_SECTOR_PX = 100  # smaller samples (tiny rooms) give no verdict
 # mouth (measured: 1.6-2.4m "arcs" on balcony and corridor openings, while
 # every genuinely arc-drawn door on the corpus sits at 0.57-1.33m).
 MAX_LEAF_MM = 1400.0
+MAX_HOST_GAP_THICKNESSES = 4.0
 
 
 @dataclass(frozen=True)
@@ -106,7 +108,7 @@ def find_openings(
             _scan_segment(si, seg, walls, room_masks, silhouette, min_len, max_len)
         )
 
-    raw = _dedupe(raw, walls.thickness_px)
+    raw = _resolve_unknown_adjacencies(_dedupe(raw, walls.thickness_px), rooms, walls.thickness_px)
     if len(raw) > MAX_CANDIDATES:
         raw.sort(key=lambda c: c.width_px, reverse=True)
         raw = raw[:MAX_CANDIDATES]
@@ -122,6 +124,52 @@ def find_openings(
             arc = _detect_arc(cand, walls, room_masks, bgr, binary)
         out.append(replace(cand, marker=marker, kind_hint=kind, arc=arc))
     return out, segments
+
+
+def _resolve_unknown_adjacencies(
+    candidates: list[OpeningCandidate], rooms: list[RoomDraft], thickness: float
+) -> list[OpeningCandidate]:
+    """Fill an unknown side only when one nearby room uniquely lies opposite."""
+    polygons = [Polygon(room.polygon) if len(room.polygon) >= 3 else None for room in rooms]
+    out: list[OpeningCandidate] = []
+    for candidate in candidates:
+        known = [side for side in candidate.connects if isinstance(side, int)]
+        if (
+            UNKNOWN not in candidate.connects
+            or len(known) != 1
+            or not 0 <= known[0] < len(rooms)
+        ):
+            out.append(candidate)
+            continue
+        current = known[0]
+        coordinate = 1 if candidate.axis == "h" else 0
+        current_side = rooms[current].seed[coordinate] - candidate.center[coordinate]
+        opening = box(*candidate.bbox)
+        nearby = sorted(
+            (
+                opening.distance(polygon),
+                index,
+            )
+            for index, polygon in enumerate(polygons)
+            if index != current
+            and polygon is not None
+            and current_side
+            * (rooms[index].seed[coordinate] - candidate.center[coordinate])
+            < 0
+        )
+        if (
+            nearby
+            and nearby[0][0] <= 1.5 * thickness
+            and (len(nearby) == 1 or nearby[1][0] > nearby[0][0] + 0.5 * thickness)
+        ):
+            neighbour = nearby[0][1]
+            connects = (
+                neighbour if candidate.connects[0] == UNKNOWN else candidate.connects[0],
+                neighbour if candidate.connects[1] == UNKNOWN else candidate.connects[1],
+            )
+            candidate = replace(candidate, connects=connects)
+        out.append(candidate)
+    return out
 
 
 _OPEN_ZONE_TYPES = {
@@ -843,9 +891,9 @@ def _fuse_collinear_segments(segments: list[WallSegment], t: float) -> list[Wall
     Sub-thickness face jitter in the traced polygons splits a straight wall
     into two pieces offset by a few pixels; renderers show the offset as a
     crack. Pieces with the same rooms on both sides, nearly the same
-    centerline (≤0.6t apart) and no real gap between them (≤1.5t) fuse into
-    one segment at the length-weighted centerline. Genuine recesses are a
-    full thickness deep or more and stay split."""
+    centerline (≤0.6t apart) and at most one door-sized gap (≤4t) fuse into
+    one host wall. The opening scanner then distinguishes solid continuation
+    from an actual pixel gap; larger open-plan breaks stay split."""
 
     def geometry(seg: WallSegment) -> tuple[str, float, float, float] | None:
         dx, dy = seg.end[0] - seg.start[0], seg.end[1] - seg.start[1]
@@ -877,8 +925,8 @@ def _fuse_collinear_segments(segments: list[WallSegment], t: float) -> list[Wall
                     or o_info[0] != axis
                     or set(other.rooms) != set(seg.rooms)
                     or abs(o_info[1] - fixed) > 0.6 * t
-                    or o_info[2] > hi + 1.5 * t
-                    or o_info[3] < lo - 1.5 * t
+                    or o_info[2] > hi + MAX_HOST_GAP_THICKNESSES * t
+                    or o_info[3] < lo - MAX_HOST_GAP_THICKNESSES * t
                 ):
                     continue
                 o_weight = o_info[3] - o_info[2]

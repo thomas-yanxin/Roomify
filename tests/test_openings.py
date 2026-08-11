@@ -5,7 +5,9 @@ import pytest
 from conftest import WALL_GREY, blank, draw_gap, draw_sill, draw_wall_rect
 from roomify.merge import RoomDraft, merge_rooms
 from roomify.openings import (
+    OpeningCandidate,
     WallSegment,
+    _resolve_unknown_adjacencies,
     derive_wall_segments,
     find_openings,
     find_zone_passages,
@@ -183,6 +185,19 @@ def test_tee_junction_ends_meet_perpendicular_walls():
     assert closed[1] == vertical  # the crossed wall itself is untouched
 
 
+def test_door_sized_gap_keeps_one_host_wall():
+    from roomify.openings import _fuse_collinear_segments
+
+    pieces = [
+        WallSegment((100.0, 100.0), (100.0, 180.0), 10.0, (0, 1)),
+        WallSegment((100.0, 210.0), (100.0, 300.0), 10.0, (0, 1)),
+    ]
+    fused = _fuse_collinear_segments(pieces, 10.0)
+    assert len(fused) == 1
+    assert fused[0].start == (100.0, 100.0)
+    assert fused[0].end == (100.0, 300.0)
+
+
 def test_short_diagonal_stubs_are_not_walls(simple_plan):
     import numpy as np
 
@@ -358,6 +373,45 @@ def test_far_side_of_a_wall_is_the_room_behind_it():
     # …and a wall with nothing but building behind it is still "unknown"
     lonely = WallSegment((140.0, 50.0), (140.0, 150.0), 10.0, (0, "exterior"))
     assert _resolve_connects(lonely, walls, [left, None], silhouette) == (0, "unknown")
+
+
+def test_unknown_opening_uses_only_a_unique_nearby_room():
+    def room(x0, x1, y0, y1):
+        polygon = np.array(
+            [[x0, y0], [x1, y0], [x1, y1], [x0, y1]], dtype=np.float64
+        )
+        return RoomDraft(
+            polygon=polygon,
+            area_px=float((x1 - x0) * (y1 - y0)),
+            perimeter_px=float(2 * (x1 - x0 + y1 - y0)),
+            edge_lengths_px=[float(x1 - x0), float(y1 - y0)] * 2,
+            seed=((x0 + x1) / 2, (y0 + y1) / 2),
+            source="cv",
+            confidence=0.8,
+        )
+
+    candidate = OpeningCandidate(
+        marker="A",
+        bbox=(45.0, 95.0, 55.0, 105.0),
+        center=(50.0, 100.0),
+        axis="h",
+        width_px=10.0,
+        kind_hint="doorlike",
+        connects=(0, "unknown"),
+        wall_index=0,
+        arc=None,
+    )
+    near = _resolve_unknown_adjacencies(
+        [candidate], [room(0, 100, 0, 90), room(0, 100, 110, 200)], 10.0
+    )
+    assert near[0].connects == (0, 1)
+
+    ambiguous = _resolve_unknown_adjacencies(
+        [candidate],
+        [room(0, 100, 0, 90), room(0, 45, 110, 200), room(55, 100, 110, 200)],
+        10.0,
+    )
+    assert ambiguous[0].connects == (0, "unknown")
 
 
 def test_dashed_zone_divider_is_not_reported_as_a_wall():

@@ -642,6 +642,14 @@ _WINDOWS = {
     "floor_to_ceiling_window",
     "blind_window",
 }
+_OPEN_PLAN_ROOMS = {
+    "living_room",
+    "living_dining",
+    "dining_room",
+    "kitchen",
+    "hallway",
+    "entrance",
+}
 # Legend elements that legitimately stand free of walls; anything else the
 # VLM reports as an "extra" is an opening claim without usable geometry.
 _FREE_STANDING = {"stair", "railing", "elevator", "escalator",
@@ -669,6 +677,16 @@ def _window_conflicts_with_privacy_room(
     )
 
 
+def _both_sides_open_plan(
+    connects: tuple[int | str, int | str], rooms: list[RoomDraft]
+) -> bool:
+    return _both_sides_indoor(connects, rooms) and all(
+        rooms[side].room_type in _OPEN_PLAN_ROOMS
+        for side in connects
+        if isinstance(side, int)
+    )
+
+
 # Beyond this an interior break is not credible as one opening: the corpus's
 # genuine room-to-room mouths top out around 2m, while every wider one sits
 # on a wall the ``solid`` mask lost. Openings are scanned against ``solid``,
@@ -690,7 +708,13 @@ MAX_INTERIOR_SPAN_MM = 2500.0
 # the wall, frame and reveal included, and single_door widths run
 # continuously from 1112 to 1375mm with no gap to cut at.
 MAX_DOOR_SPAN_MM = 3500.0
-_WALK_THROUGH = {"single_door", "double_door", "sliding_door", "folding_door"}
+_WALK_THROUGH = {
+    "passage",
+    "single_door",
+    "double_door",
+    "sliding_door",
+    "folding_door",
+}
 
 
 def merge_openings(
@@ -802,13 +826,22 @@ def merge_openings(
             per_mm = scale.px_per_mm_x if cand.axis == "h" else scale.px_per_mm_y
             span_mm = cand.width_px / per_mm if per_mm > 0 else 0.0
             reason = None
-            if element_type in _WALK_THROUGH and span_mm > MAX_DOOR_SPAN_MM:
+            if (
+                element_type in _WALK_THROUGH
+                and element_type != "passage"
+                and span_mm > MAX_DOOR_SPAN_MM
+            ):
                 reason = (
                     f"spans {span_mm:.0f}mm — wider than any door leaf can be built, "
                     "so the drawing is a glazed facade or a merged wall run"
                 )
-            elif span_mm > MAX_INTERIOR_SPAN_MM and _both_sides_indoor(
-                cand.connects, rooms or []
+            elif (
+                span_mm > MAX_INTERIOR_SPAN_MM
+                and _both_sides_indoor(cand.connects, rooms or [])
+                and (
+                    element_type not in _WALK_THROUGH
+                    or not _both_sides_open_plan(cand.connects, rooms or [])
+                )
             ):
                 reason = (
                     f"spans {span_mm:.0f}mm between two indoor rooms — too wide for "
@@ -861,6 +894,8 @@ def merge_openings(
 
     h, w = image_shape
     for extra in read.extra_elements if read is not None else []:
+        if not extra.is_real:
+            continue
         y0, x0, y1, x1 = (v / 1000.0 for v in extra.box_2d)
         bbox = (x0 * w, y0 * h, x1 * w, y1 * h)
         approximate_opening = extra.element_type not in _FREE_STANDING
@@ -882,6 +917,8 @@ def merge_openings(
                 )
                 continue
             bbox = snapped
+            if any(_boxes_overlap(bbox, c.bbox, slack=8.0) for c in candidates):
+                continue
         elements.append(
             ElementDraft(
                 element_type=extra.element_type,

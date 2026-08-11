@@ -653,6 +653,16 @@ def test_wide_interior_span_is_left_unresolved_not_asserted():
     assert [w.code for w in warnings] == ["opening_span_implausible"]
     assert [u.path for u in unresolved] == ["openings/A/element_type"]
 
+    # A wide opening is normal between open-plan public zones.
+    indoor[0].room_type = "living_room"
+    indoor[1].room_type = "dining_room"
+    drafts, _, warnings, unresolved = merge_openings(
+        [_Cand()], read, (1000, 1000), indoor, scale
+    )
+    assert drafts[0].element_type == "passage"
+    assert warnings == []
+    assert unresolved == []
+
     # a door-width break on the same wall is untouched
     drafts, _, warnings, _ = merge_openings(
         [_Cand(width_px=45.0)], read, (1000, 1000), indoor, scale
