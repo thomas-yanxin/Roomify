@@ -11,8 +11,13 @@ from roomify.vlm import (
     RoomRead,
     VLMClient,
     VLMUnavailable,
+    extra_elements_prompt,
     marker_ids,
+    remap_room_sheet_extras,
+    render_candidate_sheet,
     render_room_overlay,
+    render_room_sheet,
+    room_semantics_prompt,
 )
 
 
@@ -44,6 +49,48 @@ def test_room_entry_leniency():
     assert read.extra_rooms[0].box_2d == [100, 50, 400, 300]
 
 
+def test_room_sheet_extra_box_maps_from_overlay_panel():
+    read = RoomRead.model_validate(
+        {"extra_rooms": [{"box_2d": [100, 870, 200, 910], "room_type": "storage"}]}
+    )
+
+    mapped = remap_room_sheet_extras(read, panel_width=120)
+
+    assert mapped.extra_rooms[0].box_2d == pytest.approx([100, 731.333, 200, 814])
+
+
+def test_room_prompt_keeps_secondary_labelled_spaces():
+    prompt = room_semantics_prompt(2, review_sheet=True)
+
+    assert "Do not force an inventory label onto a marker" in prompt
+    assert "even when the overlay polygon covers it" in prompt
+    assert "with a toilet is a bathroom" in prompt
+    assert "never box a bed, sofa, dining table" in prompt
+
+
+def test_vetoed_room_drops_service_shaft_semantics():
+    from roomify.vlm import RoomEntry
+
+    entry = RoomRead.model_validate(
+        {
+            "rooms": {
+                "1": {
+                    "name": "管道",
+                    "room_type": "storage",
+                    "printed_area_sqm": 0.25,
+                    "not_a_room": False,
+                }
+            }
+        }
+    ).rooms["1"]
+
+    assert entry.name is None
+    assert entry.printed_area_sqm is None
+    assert entry.not_a_room
+    assert RoomEntry(name="未命名", printed_area_sqm=0.01).not_a_room
+    assert RoomEntry(name="入户花园", room_type="multipurpose").room_type == "entrance"
+
+
 def test_plan_read_leniency():
     read = PlanRead.model_validate(
         {
@@ -58,6 +105,8 @@ def test_plan_read_leniency():
     assert read.footprint_box_2d is None
     # the bad-side chain raises at ChainRead level; ensure top survived
     assert any(c.side == "top" and c.values_mm == [2632.0, 3709.0] for c in read.dimension_chains)
+    assert PlanRead.model_validate([{"north_angle_deg": 0}]).north_angle_deg == 0
+    assert PlanRead.model_validate([]).dimension_chains == []
 
 
 def test_chain_read_rejects_unknown_side():
@@ -112,6 +161,17 @@ def test_call_accepts_fenced_json(monkeypatch):
     assert client.call("p", [np.zeros((4, 4, 3), np.uint8)], RoomRead) is not None
 
 
+def test_call_retries_a_schema_echo(monkeypatch):
+    from roomify.vlm import OpeningsRead
+
+    echo = json.dumps({"type": "object", "properties": {"candidates": {"type": "array"}}})
+    good = json.dumps({"candidates": [], "extra_elements": []})
+    client, fake = _client_with(monkeypatch, [echo, good])
+
+    assert client.call("p", [np.zeros((4, 4, 3), np.uint8)], OpeningsRead) is not None
+    assert len(fake.requests) == 2
+
+
 def _bad_request(message):
     import httpx
     from openai import BadRequestError
@@ -137,6 +197,47 @@ def test_marker_array_contract_normalizes_to_dict():
     )
     assert set(read.rooms) == {"1", "2"}
     assert read.rooms["2"].name == "客厅"
+
+    root = RoomRead.model_validate(
+        [{"marker": "1", "name": "厨房", "room_type": "kitchen"}]
+    )
+    assert root.rooms["1"].name == "厨房"
+
+
+def test_single_object_array_keeps_all_vlm_tables():
+    from roomify.vlm import OpeningsRead, SpatialRoomRead
+
+    room = RoomRead.model_validate(
+        [{"rooms": [{"marker": "1", "name": "卧室"}], "extra_rooms": []}]
+    )
+    spatial = SpatialRoomRead.model_validate(
+        [{"rooms": [{"name": "厨房", "label_box_2d": [1, 2, 3, 4],
+                      "room_box_2d": [0, 0, 100, 100]}]}]
+    )
+    openings = OpeningsRead.model_validate(
+        [{"candidates": [], "extra_elements": [
+            {"element_type": "single_door", "box_2d": [1, 2, 3, 4]}
+        ]}]
+    )
+
+    assert room.rooms["1"].name == "卧室"
+    assert spatial.rooms[0].name == "厨房"
+    assert openings.extra_elements[0].element_type == "single_door"
+
+    split = RoomRead.model_validate(
+        [
+            {"marker": "2", "name": "客厅"},
+            {"extra_rooms": [{"name": "阳台", "box_2d": [1, 2, 3, 4]}]},
+        ]
+    )
+    assert split.rooms["2"].name == "客厅"
+    assert split.extra_rooms[0].name == "阳台"
+
+    bad_room_box = SpatialRoomRead.model_validate(
+        {"rooms": [{"name": "卫生间", "label_box_2d": [10, 20, 30, 40],
+                    "room_box_2d": [10, 20, 10, 80]}]}
+    )
+    assert bad_room_box.rooms[0].room_box_2d == [10, 20, 30, 40]
 
 
 def test_fast_path_sends_schema_and_disables_thinking(monkeypatch):
@@ -224,6 +325,22 @@ def test_room_overlay_keeps_marker_inside_narrow_room():
     assert 100 <= ys.mean() <= 120
 
 
+def test_room_sheet_keeps_an_unmodified_text_panel():
+    bgr = np.full((100, 120, 3), 245, np.uint8)
+    room = CVRoom(
+        polygon=np.array([[10.0, 10.0], [110.0, 10.0], [110.0, 90.0], [10.0, 90.0]]),
+        area_px=8000.0,
+        perimeter_px=360.0,
+        edge_lengths_px=[100.0, 80.0, 100.0, 80.0],
+        seed=(60.0, 50.0),
+    )
+
+    sheet = render_room_sheet(bgr, [room])
+
+    assert sheet.shape == (100, 248, 3)
+    assert np.array_equal(sheet[:, :120], bgr)
+
+
 def test_openings_prompt_carries_structural_context():
     from roomify.vlm import openings_prompt
 
@@ -235,3 +352,30 @@ def test_openings_prompt_carries_structural_context():
     assert "connects 客厅" in prompt
     assert "doors or passages, not windows" in prompt
     assert "genuinely unmarked doors/windows" in openings_prompt(["A"])
+
+
+def test_candidate_sheet_combines_context_and_crops():
+    from roomify.vlm import openings_prompt
+
+    bgr = np.full((200, 300, 3), 245, np.uint8)
+    candidates = [
+        SimpleNamespace(marker="A", bbox=(40, 95, 100, 105)),
+        SimpleNamespace(marker="B", bbox=(180, 95, 250, 105)),
+    ]
+
+    sheet = render_candidate_sheet(bgr, candidates)
+
+    assert sheet.shape[0] > bgr.shape[0]
+    assert sheet.shape[1] == 640
+    assert (sheet != 255).any()
+    assert "single image is a review sheet" in openings_prompt(
+        ["A", "B"], contact_sheet=True
+    )
+
+
+def test_extra_elements_prompt_excludes_already_boxed_symbols():
+    prompt = extra_elements_prompt()
+
+    assert "NO magenta box covers" in prompt
+    assert "Never repeat a boxed object" in prompt
+    assert "empty candidates list" in prompt

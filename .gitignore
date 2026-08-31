@@ -13,3 +13,7 @@ dist/
 
 # local debug output
 debug/
+/autoresearch/
+
+# private evaluation data must never become another development corpus
+.roomify-holdout/

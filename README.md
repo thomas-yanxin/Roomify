@@ -34,12 +34,12 @@ This plan is included in the repository:
   <img src="examples/floorplan-1.png" alt="Residential floor plan used by the Roomify example" width="620">
 </p>
 
-[`floorplan-1.png`](examples/floorplan-1.png) →
-[`floorplan-1.json`](examples/floorplan-1.json)
+[`floorplan-1.png`](examples/floorplan-1.png) → run
+`roomify examples/floorplan-1.png -o plan.json`
 
 | Rooms | Wall segments | Openings | Scale confidence | Living-room area |
 |---:|---:|---:|:---:|:---|
-| 9 | 55 | 18 | `high` | 37.34 m² measured / 37.52 m² printed |
+| 9 | 41 | 16 | `high` | 37.88 m² measured / 37.52 m² printed |
 
 Selected fields from the full output:
 
@@ -223,7 +223,9 @@ definitions.
 ## How it works
 
 1. Load the image or PDF and keep a mapping back to its original pixels.
-2. Detect walls, enclosed rooms, and wall openings with computer vision.
+2. Detect walls, enclosed rooms, and wall openings with computer vision. When no real
+   diagonal wall family is present, normalize room faces to strict orthogonal polygons and
+   reject wall-width pockets; angled plans keep the general polygon path.
 3. Send numbered overlays to the VLM for room labels, printed areas,
    dimensions, and symbol classes.
 4. Merge both sources, solve the x/y scale, and validate the result with
@@ -234,10 +236,13 @@ warning and leave the affected fields unresolved.
 
 ### VLM requests
 
-Normal reads use [structured outputs](https://developers.openai.com/api/docs/guides/structured-outputs)
-with strict `json_schema` and model thinking disabled. On the bundled example,
-this completes in about 25–40 seconds; free-form reasoning measured 6–30×
-slower.
+Room text and scale reads use
+[structured outputs](https://developers.openai.com/api/docs/guides/structured-outputs)
+with strict `json_schema` and model thinking disabled. Opening classification
+uses one review sheet containing the full plan and magnified crops, then validates
+a JSON object with Pydantic. Some compatible endpoints accept the larger opening
+schema but time out during constrained decoding; the single-image path avoids that
+failure.
 
 Roomify runs at most two VLM calls concurrently. If an endpoint rejects
 `json_schema` or `enable_thinking`, that feature is disabled for the session.
@@ -246,11 +251,59 @@ thinking enabled.
 
 ## Current scope
 
-- Best results come from residential plans with solid-filled walls.
+- The supported release target is orthogonal residential plans with
+  solid-filled walls and conventional door/window symbols.
 - Thin-line CAD plans use a simpler fallback path.
 - Spaces without any separating stroke are returned as one room.
 - Bay windows require visible outer and side strokes; incomplete evidence stays
   unresolved instead of receiving an invented depth.
+- `floorplan-6`, `floorplan-8`, and `floorplan-14` contain genuine diagonal or
+  multi-axis geometry and are explicitly unsupported by the orthogonal mode.
+  Their historical regressions are diagnostic only and are not counted as
+  supported passes.
+
+## Evaluation and release gate
+
+`examples/` is a frozen development corpus. Exact-pixel assertions under
+`tests/integration/` detect regressions on that corpus; they are not evidence of
+generalization. Run unit checks and development-corpus checks separately:
+
+```bash
+uv run pytest -m "not dev_corpus"
+uv run pytest -m dev_corpus
+```
+
+Release evidence must come from an unrevealed, cross-source holdout stored
+outside the checkout. Generate one Roomify JSON per private image, annotate the
+same filenames in a separate directory, and run:
+
+```bash
+uv run roomify-eval /secure/predictions /secure/truth \
+  --gates evaluation/release-gates-v1.json -o holdout-report.json
+```
+
+The evaluator reports room mean IoU, wall boundary F1, exact-type opening F1,
+walkable adjacency-graph F1, and physical-violation rate. It applies the fixed
+gate to the aggregate and to every `source_group`; v1 requires at least 30 cases
+from three independent sources. A truth file uses this minimal schema:
+
+```json
+{
+  "protocol_version": "1.0",
+  "source_group": "independent-provider-a",
+  "image_sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "image_width_px": 1000,
+  "image_height_px": 800,
+  "orthogonal": true,
+  "rooms": [{"id": "r1", "polygon_px": [{"x": 0, "y": 0}, {"x": 100, "y": 0}, {"x": 100, "y": 80}, {"x": 0, "y": 80}]}],
+  "walls": [{"start_px": {"x": 0, "y": 0}, "end_px": {"x": 100, "y": 0}}],
+  "openings": [{"element_type": "single_door", "bbox_px": {"x0": 30, "y0": 0, "x1": 50, "y1": 8}, "connects": ["r1", "exterior"]}]
+}
+```
+
+Do not copy, derive, or inspect holdout labels while changing extraction rules
+or thresholds. A release is unverified until this command passes; bundled
+examples alone can never produce a release claim.
 
 ## Development
 
@@ -261,9 +314,8 @@ uv run ruff check src tests
 uv run mypy src
 ```
 
-Every feature change must pass the live VLM acceptance tests. They run the
-bundled example against its human-reviewed fixture and require the three VLM
-environment variables:
+The live VLM development regression requires the three VLM environment
+variables and consumes real calls:
 
 ```bash
 uv run pytest tests/integration

@@ -61,6 +61,36 @@ class WallExtraction:
     # the wall network. Sill-less arc-style plans seal their doorways with
     # exactly these strokes — the leaf+arc chain connects jamb to jamb.
     door_hints: np.ndarray | None = None
+    # Straight jamb-to-jamb chords derived from ``door_hints``. Room
+    # extraction seals with these so a swing arc never becomes a room wall.
+    door_seals: np.ndarray | None = None
+    # Functional cuts introduced by a VLM-labelled room split. Keep these
+    # separate from drawn zone dividers: only inferred cuts can divide an
+    # otherwise continuous facade opening.
+    inferred_zones: np.ndarray | None = None
+
+
+def _arc_stroke_coverage(
+    binary: np.ndarray,
+    valid: np.ndarray,
+    hinge: tuple[float, float],
+    along: np.ndarray,
+    normal: np.ndarray,
+    radius: float,
+) -> float:
+    """Share of a quarter-circle covered by stroke pixels."""
+    angles = np.linspace(0.08, np.pi / 2 - 0.08, 32)
+    height, width = binary.shape
+    hits = usable = 0
+    for angle in angles:
+        direction = along * np.cos(angle) + normal * np.sin(angle)
+        x = int(round(hinge[0] + direction[0] * radius))
+        y = int(round(hinge[1] + direction[1] * radius))
+        if not (0 <= x < width and 0 <= y < height) or not valid[y, x]:
+            continue
+        usable += 1
+        hits += int(binary[max(0, y - 1) : y + 2, max(0, x - 1) : x + 2].any())
+    return hits / usable if usable >= len(angles) * 0.5 else 0.0
 
 
 def estimate_wall_bands(bgr: np.ndarray) -> list[tuple[int, int]]:
@@ -95,7 +125,7 @@ def estimate_wall_bands(bgr: np.ndarray) -> list[tuple[int, int]]:
         # A loose noise floor only: the stroke-core score below is what
         # actually separates wall tones from junk, and thin partition walls
         # can carry little histogram mass.
-        if hist[peak] < 0.0002 * low_chroma.size:
+        if hist[peak] < 0.00005 * low_chroma.size:
             break
         band = (
             max(0, peak - BAND_BELOW_PEAK),
@@ -242,6 +272,26 @@ def extract_walls(bgr: np.ndarray) -> WallExtraction:
     if thickness > 12:
         solid, thickness = _solid_walls(in_band, max(MIN_CORE_HALF_WIDTH, 0.25 * thickness))
 
+    # A facade can use two short black load-bearing caps beside a light
+    # window while the rest of the plan uses grey walls. Their tone is too
+    # sparse to qualify as a whole-image band; keep only dark thick pieces
+    # that touch structure and extend its footprint.
+    base_footprint = _bbox(solid)
+    if base_footprint is not None and all(lo > 33 for lo, _hi in bands):
+        dark = np.where((gray <= 33) & low_chroma, np.uint8(255), np.uint8(0))
+        dark_solid, _ = _solid_walls(dark, MIN_CORE_HALF_WIDTH)
+        count, labels, stats, _ = cv2.connectedComponentsWithStats(dark_solid)
+        near_solid = cv2.dilate(solid, np.ones((5, 5), np.uint8))
+        x0, y0, x1, y1 = base_footprint
+        keep = np.zeros(count, dtype=bool)
+        for label in range(1, count):
+            x, y, width, height = stats[label, :4]
+            outside = x < x0 or y < y0 or x + width - 1 > x1 or y + height - 1 > y1
+            keep[label] = outside and bool(np.any(near_solid[labels == label]))
+        caps = np.where(keep[labels], np.uint8(255), np.uint8(0))
+        solid = cv2.bitwise_or(solid, caps)
+        in_band = cv2.bitwise_or(in_band, caps)
+
     footprint = _bbox(solid)
     lines = _thin_lines(gray, footprint)
     if footprint is None:
@@ -284,6 +334,7 @@ def extract_walls(bgr: np.ndarray) -> WallExtraction:
     union = cv2.bitwise_or(solid, lines)
     stroke_bin = _stroke_binary(gray, footprint)
     zones = _zone_lines(stroke_bin, union, footprint, angles)
+    door_hints, door_seals = _door_hints(stroke_bin, union, zones, thickness)
     return WallExtraction(
         solid=solid,
         lines=lines,
@@ -295,7 +346,8 @@ def extract_walls(bgr: np.ndarray) -> WallExtraction:
         footprint=footprint,
         angles=angles,
         zones=zones,
-        door_hints=_door_hints(stroke_bin, union, zones),
+        door_hints=door_hints,
+        door_seals=door_seals,
     )
 
 
@@ -476,7 +528,8 @@ def _door_hints(
     binary: np.ndarray,
     union: np.ndarray,
     zones: np.ndarray | None,
-) -> np.ndarray | None:
+    wall_thickness: float,
+) -> tuple[np.ndarray | None, np.ndarray | None]:
     """Thin strokes hanging off the wall network: door leaves and swing arcs.
 
     Arc-style plans draw no sill across the doorway — the only strokes
@@ -500,17 +553,23 @@ def _door_hints(
         thin, cv2.bitwise_not(cv2.dilate(union, np.ones((3, 3), np.uint8)))
     )
     thin = cv2.morphologyEx(thin, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
-    near_wall = cv2.dilate(union, np.ones((9, 9), np.uint8))
+    near_radius = max(4, int(round(0.5 * wall_thickness)))
+    near_wall = cv2.dilate(
+        union, np.ones((2 * near_radius + 1, 2 * near_radius + 1), np.uint8)
+    )
     n, labels, stats, _ = cv2.connectedComponentsWithStats(thin, connectivity=8)
     hints = np.zeros_like(binary)
+    seals = np.zeros_like(binary)
     found = False
+    min_span = max(6.0, 0.75 * wall_thickness)
+    max_span = 20.0 * wall_thickness
     for i in range(1, n):
         x, y, bw, bh, area = stats[i]
         long_side = max(bw, bh)
-        if not 10 <= long_side <= 100:
+        if not min_span <= long_side <= max_span:
             continue
         component = labels[y : y + bh, x : x + bw] == i
-        touching = near_wall[y : y + bh, x : x + bw][component]
+        touching = component & (near_wall[y : y + bh, x : x + bw] > 0)
         if not touching.any():
             continue
         # Closed curves (leaf+arc sector boundaries, tinted-sector edges)
@@ -518,8 +577,69 @@ def _door_hints(
         # room extraction, and on plans where hints only cost coverage the
         # plain candidate variant wins the selection anyway.
         hints[y : y + bh, x : x + bw][component] = 255
+        # When the leaf and arc form one component, its two wall contacts
+        # are the doorway jambs. Add their chord: room contours then follow
+        # the structural threshold instead of tracing the swing sector.
+        count, _labels, _stats, centroids = cv2.connectedComponentsWithStats(
+            touching.astype(np.uint8), connectivity=8
+        )
+        anchors = centroids[1:count]
+        sealed = False
+        if len(anchors) >= 2 and long_side > 8.0 * wall_thickness:
+            left, right = max(
+                (
+                    (a, b)
+                    for i, a in enumerate(anchors)
+                    for b in anchors[i + 1 :]
+                ),
+                key=lambda pair: float(np.sum((pair[0] - pair[1]) ** 2)),
+            )
+            left = left + (x, y)
+            right = right + (x, y)
+            if min(abs(left[0] - right[0]), abs(left[1] - right[1])) > near_radius:
+                # One radius (the leaf) may already be in ``union`` as a
+                # long thin line, leaving only the arc in this component.
+                # Its orthogonal corner nearest the wall is the hinge; the
+                # less-inked radius from there is the actual threshold.
+                corners = (np.array((left[0], right[1])), np.array((right[0], left[1])))
+                distance = cv2.distanceTransform(
+                    cv2.bitwise_not(union), cv2.DIST_L2, 5
+                )
+                hinge = min(
+                    corners,
+                    key=lambda point: distance[
+                        int(np.clip(round(point[1]), 0, union.shape[0] - 1)),
+                        int(np.clip(round(point[0]), 0, union.shape[1] - 1)),
+                    ],
+                )
+                structural = cv2.dilate(
+                    union, np.ones((2 * near_radius + 1, 2 * near_radius + 1), np.uint8)
+                )
+
+                def ink_share(
+                    end: np.ndarray,
+                    hinge: np.ndarray = hinge,
+                    structural: np.ndarray = structural,
+                ) -> float:
+                    samples = np.linspace(hinge, end, max(2, int(np.linalg.norm(end - hinge))))
+                    xs = np.clip(np.round(samples[:, 0]).astype(int), 0, union.shape[1] - 1)
+                    ys = np.clip(np.round(samples[:, 1]).astype(int), 0, union.shape[0] - 1)
+                    return float((structural[ys, xs] > 0).mean())
+
+                right = min((left, right), key=ink_share)
+                left = hinge
+            cv2.line(
+                seals,
+                (int(round(left[0])), int(round(left[1]))),
+                (int(round(right[0])), int(round(right[1]))),
+                255,
+                max(1, int(round(0.2 * wall_thickness))),
+            )
+            sealed = True
+        if not sealed:
+            seals[y : y + bh, x : x + bw][component] = 255
         found = True
-    return hints if found else None
+    return (hints, seals) if found else (None, None)
 
 
 def _stroke_binary(

@@ -30,6 +30,44 @@ def test_fallback_ladder_bridges_bare_door_gaps():
     assert len(detection.rooms) == 2
 
 
+def test_large_swing_symbol_seals_rooms_at_high_resolution():
+    """Door furniture scales with the walls, not an absolute pixel cap."""
+    img = np.full((800, 1100, 3), 255, np.uint8)
+    wall = (100, 100, 100)
+    cv2.rectangle(img, (50, 50), (1050, 750), wall, 12)
+    cv2.line(img, (450, 50), (450, 300), wall, 12)
+    cv2.line(img, (450, 450), (450, 750), wall, 12)
+    cv2.line(img, (450, 300), (600, 300), (50, 50, 50), 2)
+    cv2.ellipse(img, (450, 300), (150, 150), 0, 0, 90, (50, 50, 50), 2)
+
+    walls = extract_walls(img)
+    detection = detect_rooms(walls)
+
+    assert walls.door_hints is not None
+    assert len(detection.rooms) == 2
+
+
+def test_door_furniture_pocket_is_not_a_room():
+    from roomify.rooms import CVRoom, _is_door_pocket
+
+    polygon = np.array([[20.0, 20.0], [60.0, 20.0], [60.0, 60.0], [20.0, 60.0]])
+    room = CVRoom(
+        polygon=polygon,
+        area_px=1600.0,
+        perimeter_px=160.0,
+        edge_lengths_px=[40.0] * 4,
+        seed=(40.0, 40.0),
+    )
+    hints = np.zeros((100, 100), np.uint8)
+    cv2.line(hints, (20, 20), (60, 20), 255, 1)
+    cv2.line(hints, (60, 20), (60, 60), 255, 1)
+
+    assert _is_door_pocket(room, hints, wall_thickness=10.0)
+    solid = np.zeros_like(hints)
+    cv2.rectangle(solid, (20, 20), (60, 60), 255, 1)
+    assert not _is_door_pocket(room, hints, wall_thickness=10.0, solid=solid)
+
+
 def test_l_shaped_room_vertices():
     img = blank()
     draw_wall_rect(img, 100, 100, 500, 400, thickness=10)
@@ -44,6 +82,50 @@ def test_l_shaped_room_vertices():
             room.polygon, np.roll(room.polygon, -1, axis=0), strict=True
         )]
     )
+    assert all(
+        a[0] == b[0] or a[1] == b[1]
+        for a, b in zip(room.polygon, np.roll(room.polygon, -1, axis=0), strict=True)
+    )
+
+
+def test_orthogonal_mode_removes_wall_width_sliver():
+    # A sealed window pocket can pass generic area/aspect filters but is only
+    # one wall thick. It must not become a room in a rectilinear plan.
+    img = blank()
+    draw_wall_rect(img, 100, 100, 500, 400, thickness=10)
+    cv2.rectangle(img, (200, 90), (280, 110), (WALL_GREY,) * 3, 2)
+
+    rooms = detect_rooms(extract_walls(img)).rooms
+
+    assert len(rooms) == 1
+    assert all(
+        a[0] == b[0] or a[1] == b[1]
+        for a, b in zip(rooms[0].polygon, np.roll(rooms[0].polygon, -1, axis=0), strict=True)
+    )
+
+
+def test_orthogonal_mode_flattens_door_depth_toe():
+    from shapely.geometry import Polygon
+
+    from roomify.rooms import CVRoom, _orthogonal_rooms
+
+    ring = np.array(
+        [[0.0, 0.0], [100.0, 0.0], [100.0, 80.0], [40.0, 80.0], [40.0, 90.0], [0.0, 90.0]]
+    )
+    polygon = Polygon(ring)
+    room = CVRoom(
+        polygon=ring,
+        area_px=polygon.area,
+        perimeter_px=polygon.length,
+        edge_lengths_px=[100.0, 80.0, 60.0, 10.0, 40.0, 90.0],
+        seed=(50.0, 40.0),
+    )
+
+    normalized = _orthogonal_rooms([room], wall_thickness=10.0)
+
+    assert normalized is not None
+    assert len(normalized[0].polygon) == 4
+    assert normalized[0].area_px == pytest.approx(8_000.0)
 
 
 def test_harsh_texture_degrades_without_crashing():
@@ -211,6 +293,43 @@ def test_composite_keeps_stable_parent_and_local_room():
     result = _composite(candidates, building_area=100_000, union=union)
 
     assert [room.area_px for room in result.rooms] == [70_000, 10_000]
+
+
+def test_composite_extracts_a_stable_wall_bounded_room_from_a_merged_parent():
+    from shapely.geometry import Polygon
+
+    from roomify.rooms import CVRoom, RoomDetection, _composite
+
+    def rect(x0, y0, x1, y1):
+        polygon = np.array([[x0, y0], [x1, y0], [x1, y1], [x0, y1]], dtype=float)
+        width, height = x1 - x0, y1 - y0
+        return CVRoom(
+            polygon=polygon,
+            area_px=width * height,
+            perimeter_px=2 * (width + height),
+            edge_lengths_px=[width, height, width, height],
+            seed=((x0 + x1) / 2, (y0 + y1) / 2),
+        )
+
+    parent = rect(0, 0, 400, 200)
+    swallowed = rect(0, 0, 80, 100)
+    rest = Polygon(parent.polygon).difference(Polygon(swallowed.polygon))
+    rest_room = CVRoom(
+        polygon=np.asarray(rest.exterior.coords[:-1]),
+        area_px=rest.area,
+        perimeter_px=rest.length,
+        edge_lengths_px=[],
+        seed=(200, 100),
+    )
+    closed = [RoomDetection([parent], f"small-close-{index}") for index in range(3)]
+    split = [RoomDetection([rest_room, swallowed], f"large-close-{index}") for index in range(5)]
+    union = np.zeros((240, 440), np.uint8)
+    cv2.polylines(union, [parent.polygon.astype(np.int32)], True, 255, 3)
+    cv2.polylines(union, [swallowed.polygon.astype(np.int32)], True, 255, 3)
+
+    result = _composite(closed + split, building_area=100_000, union=union)
+
+    assert [room.area_px for room in result.rooms] == [72_000, 8_000]
 
 
 def test_one_ended_dashed_line_is_not_a_zone_boundary():

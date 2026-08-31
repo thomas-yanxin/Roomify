@@ -1,0 +1,10 @@
+{
+  "protocol_version": "1.0",
+  "minimum_cases": 30,
+  "minimum_source_groups": 3,
+  "room_iou": 0.9,
+  "wall_f1": 0.95,
+  "opening_f1": 0.9,
+  "adjacency_f1": 0.95,
+  "physical_violation_rate": 0.0
+}

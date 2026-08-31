@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import logging
 import math
+from dataclasses import replace
 from pathlib import Path
 
+import cv2
 import numpy as np
 from shapely.geometry import Point, Polygon
 
@@ -26,8 +28,10 @@ from roomify.merge import (
     ScaleDraft,
     apply_area_checks,
     estimate_scale,
+    ground_room_inventory,
     merge_openings,
     merge_rooms,
+    pixels_per_mm_in_direction,
     reconcile_rooms,
 )
 from roomify.openings import (
@@ -36,7 +40,12 @@ from roomify.openings import (
     find_zone_passages,
     measure_bay_protrusion,
 )
-from roomify.rooms import detect_rooms, uncovered_floor
+from roomify.rooms import (
+    _boundary_fraction,
+    clean_room_ring,
+    detect_rooms,
+    uncovered_floor,
+)
 from roomify.schema import (
     DEFAULT_DOOR_HEIGHT_MM,
     DEFAULT_LEVEL_HEIGHT_MM,
@@ -58,6 +67,32 @@ from roomify.schema import (
 from roomify.walls import WallExtraction, estimate_plan_rotation, extract_walls
 
 logger = logging.getLogger("roomify.pipeline")
+
+
+def _inferred_zone_mask(
+    walls: WallExtraction,
+    boundaries: list[tuple[tuple[float, float], tuple[float, float]]],
+) -> np.ndarray | None:
+    """Keep functional cuts only where the drawing has no physical wall."""
+    radius = max(1, round(0.25 * walls.thickness_px))
+    supported = cv2.dilate(
+        walls.solid, np.ones((2 * radius + 1, 2 * radius + 1), np.uint8)
+    )
+    inferred = np.zeros_like(walls.union)
+    for start, end in boundaries:
+        points = tuple(round(value) for point in (start, end) for value in point)
+        trace = np.zeros_like(walls.union)
+        cv2.line(trace, points[:2], points[2:], 255, 1)
+        count = cv2.countNonZero(trace)
+        if count and cv2.countNonZero(cv2.bitwise_and(trace, supported)) / count < 0.5:
+            cv2.line(
+                inferred,
+                points[:2],
+                points[2:],
+                255,
+                max(1, round(0.2 * walls.thickness_px)),
+            )
+    return inferred if inferred.any() else None
 
 
 def parse(
@@ -164,28 +199,75 @@ def parse(
         from roomify.vlm import (
             ROOMS_WIRE,
             RoomRead,
-            render_room_overlay,
+            render_room_sheet,
             room_semantics_prompt,
         )
 
-        overlay = render_room_overlay(work_bgr, detection.rooms)
+        overlay = render_room_sheet(work_bgr, detection.rooms)
         if debug_dir:
             debug_mod.save(debug_dir, "vlm_room_overlay.png", overlay)
         # 1.5× upscale: printed ㎡ labels sit at the OCR limit on ~700px
         # listing exports; measured to fix small-text misreads at no latency
         # cost (the extra image tokens don't move this model's runtime).
-        import cv2
-
         upscaled = cv2.resize(overlay, None, fx=1.5, fy=1.5, interpolation=cv2.INTER_CUBIC)
         total_area = sum(r.area_px for r in detection.rooms) or 1.0
         shares = {
             str(i + 1): r.area_px / total_area for i, r in enumerate(detection.rooms)
         }
+        room_prompt = room_semantics_prompt(len(detection.rooms), shares, review_sheet=True)
         room_read = client.call(
-            room_semantics_prompt(len(detection.rooms), shares),
+            room_prompt,
             [upscaled],
             RoomRead,
             wire_schema=ROOMS_WIRE,
+        )
+        if room_read is None or (not room_read.rooms and not room_read.extra_rooms):
+            # Constrained decoding occasionally echoes an empty schema. One
+            # unconstrained retry recovers the actual inventory.
+            if room_read is None and plan_future is not None:
+                plan_future.result()
+            room_read = client.call(
+                room_prompt,
+                [upscaled],
+                RoomRead,
+            )
+        if room_read is not None and len(room_read.rooms) < len(detection.rooms):
+            retry = client.call(room_prompt, [upscaled], RoomRead)
+            if retry is not None and len(retry.rooms) > len(room_read.rooms):
+                room_read = retry
+        if room_read is not None:
+            from roomify.vlm import remap_room_sheet_extras
+
+            room_read = remap_room_sheet_extras(room_read, work_bgr.shape[1])
+        from roomify.vlm import (
+            SPATIAL_ROOMS_WIRE,
+            SpatialRoomRead,
+            spatial_room_inventory_prompt,
+        )
+
+        spatial_prompt = spatial_room_inventory_prompt()
+        spatial_images = [
+            cv2.resize(
+                work_bgr,
+                None,
+                fx=1.5,
+                fy=1.5,
+                interpolation=cv2.INTER_CUBIC,
+            )
+        ]
+        spatial_read = client.call(
+            spatial_prompt,
+            spatial_images,
+            SpatialRoomRead,
+            wire_schema=SPATIAL_ROOMS_WIRE,
+            max_tokens=5000,
+        )
+        if spatial_read is not None and not spatial_read.rooms:
+            spatial_read = client.call(
+                spatial_prompt, spatial_images, SpatialRoomRead, max_tokens=5000
+            )
+        room_read = ground_room_inventory(
+            detection.rooms, room_read, spatial_read, work_bgr.shape[:2]
         )
         if room_read is None:
             warnings.append(
@@ -199,8 +281,16 @@ def parse(
         work_bgr.shape[:2],
         uncovered_floor(walls, detection.rooms),
     )
+    if outcome.zone_boundaries:
+        walls = replace(
+            walls,
+            inferred_zones=_inferred_zone_mask(walls, outcome.zone_boundaries),
+        )
+    opening_support_rooms = list(outcome.rooms)
+    outcome.rooms, dropped_rooms = _drop_unlabelled_fixture_regions(
+        outcome.rooms, walls, work_bgr, semantic_review=room_read is not None
+    )
     warnings += outcome.warnings
-    unresolved += outcome.unresolved
 
     plan_read = plan_future.result() if plan_future is not None else None
     if plan_future is not None and plan_read is None:
@@ -208,6 +298,13 @@ def parse(
             ParseWarning(code="vlm_call_failed", message="plan-read call failed; "
                          "scale falls back to printed areas, footprint to CV")
         )
+    elif (
+        plan_read is not None
+        and not plan_read.dimension_chains
+        and plan_read.footprint_box_2d is None
+    ):
+        assert client is not None
+        plan_read = client.call(plan_read_prompt(), [work_bgr], PlanRead)
 
     chains = plan_read.dimension_chains if plan_read is not None else []
     scale_draft, scale_warnings = estimate_scale(chains, walls, outcome.rooms)
@@ -221,94 +318,148 @@ def parse(
     )
     warnings += reconcile_warnings
 
-    checked = apply_area_checks(reconciled, scale_draft)
+    door_px = 1000.0 * scale_draft.px_per_mm_x if scale_draft else None
+    candidates, segments = find_openings(
+        walls, reconciled, work_bgr, door_px, ignored_rooms=dropped_rooms
+    )
+    reconciled, isolated_fixtures = _drop_isolated_fixture_regions(
+        reconciled, candidates, walls
+    )
+    if isolated_fixtures:
+        dropped_rooms.extend(isolated_fixtures)
+        candidates, segments = find_openings(
+            walls, reconciled, work_bgr, door_px, ignored_rooms=dropped_rooms
+        )
+    if dropped_rooms:
+        support_candidates, _ = find_openings(
+            walls, opening_support_rooms, work_bgr, door_px
+        )
+        current_by_marker = {
+            room.marker: index
+            for index, room in enumerate(reconciled)
+            if room.marker is not None
+        }
+        candidates = _upgrade_openings_from_support(
+            candidates,
+            support_candidates,
+            [
+                current_by_marker.get(room.marker) if room.marker is not None else None
+                for room in opening_support_rooms
+            ],
+            walls.thickness_px,
+        )
+        segments = _extend_short_opening_hosts(candidates, segments)
+    dropped_room_markers = {
+        room.marker for room in dropped_rooms if room.marker is not None
+    }
+    if dropped_room_markers:
+        outcome.unresolved = [
+            item
+            for item in outcome.unresolved
+            if not any(
+                item.path.startswith(f"rooms/{marker}/")
+                for marker in dropped_room_markers
+            )
+        ]
+        warnings.append(
+            ParseWarning(
+                code="non_room_regions_dropped",
+                message=(
+                    f"{len(dropped_room_markers)} narrow or unsupported furniture/frame "
+                    "regions were excluded from room and wall geometry"
+                ),
+            )
+        )
+    unresolved += outcome.unresolved
+    cleaned = _clean_room_drafts(reconciled, walls)
+    checked = apply_area_checks(cleaned, scale_draft)
     warnings += checked.warnings
     rooms = checked.rooms
-
-    door_px = 1000.0 * scale_draft.px_per_mm_x if scale_draft else None
-    candidates, segments = find_openings(walls, rooms, work_bgr, door_px)
 
     openings_read = None
     if client is not None and candidates:
         from roomify.vlm import (
-            OPENINGS_WIRE,
+            EXTRAS_WIRE,
             OpeningsRead,
+            extra_elements_prompt,
             openings_prompt,
-            render_candidate_crop,
+            render_candidate_sheet,
             render_openings_overlay,
         )
 
         overlay = render_openings_overlay(work_bgr, candidates)
         if debug_dir:
             debug_mod.save(debug_dir, "vlm_openings_overlay.png", overlay)
-        context = _opening_context(candidates, rooms, scale_draft)
-        # Small chunks, in parallel: this endpoint 502s beyond ~6 images per
-        # request, and at ~45s per call serial chunks would dominate runtime.
-        chunk_size = 5
+        context = _opening_context(candidates, rooms, scale_draft, segments)
+        # Keep each response short enough for reliable JSON generation. All
+        # visual evidence for a chunk is composited into one image because
+        # this endpoint times out on multi-image opening requests.
+        chunk_size = 3
         chunks = [candidates[s : s + chunk_size] for s in range(0, len(candidates), chunk_size)]
-        futures = []
-        assert executor is not None
-        for idx, chunk in enumerate(chunks):
-            crops = [render_candidate_crop(work_bgr, c) for c in chunk]
-            futures.append(
-                executor.submit(
-                    client.call,
-                    openings_prompt(
-                        [c.marker for c in chunk],
-                        include_extras=idx == 0,
-                        context=context,
-                    ),
-                    [overlay, *crops],
-                    OpeningsRead,
-                    wire_schema=OPENINGS_WIRE,
-                )
-            )
         merged = OpeningsRead()
         got_any = False
         failed: list[list] = []
-        for chunk, future in zip(chunks, futures, strict=True):
-            part = future.result()
+        # The reference endpoint returns empty responses under concurrent
+        # vision requests. Three-candidate serial batches measured faster
+        # end-to-end than retrying nominally parallel work.
+        for chunk in chunks:
+            part = client.call(
+                openings_prompt(
+                    [c.marker for c in chunk],
+                    include_extras=False,
+                    context=context,
+                    contact_sheet=True,
+                ),
+                [render_candidate_sheet(work_bgr, chunk, context_candidates=candidates)],
+                OpeningsRead,
+                # This endpoint accepts the opening schema but times out
+                # while constrained-decoding it. The validated JSON-object
+                # path completes reliably for the same image and prompt.
+                max_tokens=1000,
+            )
             if part is None:
                 failed.append(chunk)
                 continue
             got_any = True
             merged.candidates.update(part.candidates)
-            merged.extra_elements.extend(part.extra_elements)
-        # Reasoning latency is content-driven: ambiguous crops can stall the
-        # model past the upstream's own ~240s kill switch, so retrying a
-        # failed chunk at the same size can never succeed. Retry as
-        # single-crop requests instead — the smallest possible reasoning
-        # load — and accept the degradation only per candidate.
-        retry = [c for chunk in failed for c in chunk][:12]  # bound worst-case time
-        skipped = [c for chunk in failed for c in chunk][12:]
-        for cand in retry:
+        extras_read = client.call(
+            extra_elements_prompt(),
+            [overlay],
+            OpeningsRead,
+            wire_schema=EXTRAS_WIRE,
+            max_tokens=1000,
+        )
+        if extras_read is not None:
+            got_any = True
+            merged.extra_elements.extend(extras_read.extra_elements)
+        # Concurrency can transiently saturate the endpoint. Retry each failed
+        # single-image batch once, serially; never explode one failure into a
+        # dozen slow per-crop calls.
+        for chunk in failed:
             part = client.call(
-                openings_prompt([cand.marker], include_extras=False, context=context),
-                [overlay, render_candidate_crop(work_bgr, cand)],
+                openings_prompt(
+                    [cand.marker for cand in chunk],
+                    include_extras=False,
+                    context=context,
+                    contact_sheet=True,
+                ),
+                [render_candidate_sheet(work_bgr, chunk, context_candidates=candidates)],
                 OpeningsRead,
-                wire_schema=OPENINGS_WIRE,
+                max_tokens=1000,
             )
             if part is None:
-                warnings.append(
-                    ParseWarning(
-                        code="vlm_call_failed",
-                        message=f"openings call failed for marker {cand.marker}; "
-                        "CV kind hint kept",
-                        ref=cand.marker,
+                for cand in chunk:
+                    warnings.append(
+                        ParseWarning(
+                            code="vlm_call_failed",
+                            message=f"openings call failed for marker {cand.marker}; "
+                            "CV kind hint kept",
+                            ref=cand.marker,
+                        )
                     )
-                )
                 continue
             got_any = True
             merged.candidates.update(part.candidates)
-        for cand in skipped:
-            warnings.append(
-                ParseWarning(
-                    code="vlm_call_failed",
-                    message=f"openings retry budget exhausted for marker {cand.marker}; "
-                    "CV kind hint kept",
-                    ref=cand.marker,
-                )
-            )
         openings_read = merged if got_any else None
 
     if executor is not None:
@@ -326,33 +477,90 @@ def parse(
         and all(isinstance(side, int) for side in op.connects)
     }
     for zone in find_zone_passages(walls, rooms, segments):
-        if frozenset(zone.connects) in connected_pairs:
-            continue
-        opening_drafts.append(
-            OpeningDraft(
-                marker=zone.marker,
-                element_type="passage",
-                raw_text=None,
-                bbox=zone.bbox,
-                center=zone.center,
-                axis=zone.axis,
-                width_px=zone.width_px,
-                wall_index=-1,
-                connects=zone.connects,
-                swing=None,
-                hinge=None,
-                source="cv",
-                confidence=0.7,
-            )
+        pair = frozenset(zone.connects)
+        zone_type = "sliding_door" if zone.kind_hint == "sliding_door" else "passage"
+        along = (0, 2) if zone.axis == "h" else (1, 3)
+        recovered = next(
+            (
+                opening
+                for opening in opening_drafts
+                if zone_type == "sliding_door"
+                and frozenset(opening.connects) == pair
+                and opening.axis == zone.axis
+                and (
+                    opening.element_type == "passage"
+                    or opening.element_type == "window"
+                    or opening.element_type.endswith("_window")
+                )
+                and min(opening.bbox[along[1]], zone.bbox[along[1]])
+                - max(opening.bbox[along[0]], zone.bbox[along[0]])
+                >= 0.5 * min(opening.width_px, zone.width_px)
+            ),
+            None,
         )
-        connected_pairs.add(frozenset(zone.connects))
+        if recovered is not None:
+            recovered.element_type = zone_type
+            recovered.wall_index = zone.wall_index
+            recovered.confidence = max(recovered.confidence, 0.7)
+            opening_drafts = [
+                opening
+                for opening in opening_drafts
+                if opening is recovered
+                or frozenset(opening.connects) != pair
+                or _is_walk_through(opening.element_type)
+                or opening.axis != recovered.axis
+                or min(opening.bbox[along[1]], recovered.bbox[along[1]])
+                - max(opening.bbox[along[0]], recovered.bbox[along[0]])
+                < 0.5 * min(opening.width_px, recovered.width_px)
+            ]
+        elif pair in connected_pairs:
+            continue
+        else:
+            opening_drafts.append(
+                OpeningDraft(
+                    marker=zone.marker,
+                    element_type=zone_type,
+                    raw_text=None,
+                    bbox=zone.bbox,
+                    center=zone.center,
+                    axis=zone.axis,
+                    width_px=zone.width_px,
+                    wall_index=zone.wall_index,
+                    connects=zone.connects,
+                    swing=None,
+                    hinge=None,
+                    source="cv",
+                    confidence=0.7,
+                )
+            )
+        connected_pairs.add(pair)
         warnings.append(
             ParseWarning(
                 code="open_zone_connection",
-                message="dashed functional divider retained as an open passage, not a wall",
+                message=(
+                    "continuous track across the zone divider retained as a sliding door"
+                    if zone_type == "sliding_door"
+                    else "dashed functional divider retained as an open passage, not a wall"
+                ),
                 ref=zone.marker,
             )
         )
+        zone_types = {rooms[side].room_type for side in zone.connects if isinstance(side, int)}
+        private_zone = zone_types & {"bedroom", "bathroom"}
+        expected_private_zone = zone_types == {"bathroom"} or zone_types.issubset(
+            {"bedroom", "closet", "study", "storage"}
+        )
+        if zone_type == "passage" and private_zone and not expected_private_zone:
+            warnings.append(
+                ParseWarning(
+                    code="open_zone_privacy_conflict",
+                    message=(
+                        "a dashed divider leaves a private room open to circulation; "
+                        "physical passage retained, residential privacy should be reviewed"
+                    ),
+                    ref=zone.marker,
+                )
+            )
     warnings.append(
         ParseWarning(
             code="vertical_defaults_assumed",
@@ -404,10 +612,231 @@ def parse(
     return plan
 
 
+def _drop_unlabelled_fixture_regions(
+    rooms: list[RoomDraft],
+    walls: WallExtraction,
+    bgr: np.ndarray,
+    *,
+    semantic_review: bool = True,
+) -> tuple[list[RoomDraft], list[RoomDraft]]:
+    """Remove small CV voids bounded by furniture/window-frame ink, not walls."""
+    total_area = sum(room.area_px for room in rooms)
+    kept: list[RoomDraft] = []
+    dropped: list[RoomDraft] = []
+    for room in rooms:
+        width, height = np.ptp(room.polygon, axis=0)
+        share = room.area_px / max(total_area, 1.0)
+        wall_support = _boundary_fraction(room, walls.solid)
+        mask = np.zeros(bgr.shape[:2], np.uint8)
+        cv2.fillPoly(mask, [np.round(room.polygon).astype(np.int32)], 255)
+        interior = cv2.erode(mask, np.ones((7, 7), np.uint8))
+        pixels = bgr[interior > 0]
+        paper = 0.0
+        if len(pixels):
+            mean = pixels.mean(axis=1)
+            chroma = pixels.max(axis=1) - pixels.min(axis=1)
+            paper = float(((mean > 245) & (chroma < 10)).mean())
+        unsupported = share < 0.02 and wall_support < 0.30
+        vetoed_small = room.vlm_vetoed and share < 0.02
+        narrow = (
+            share < 0.04
+            and min(width, height) < 4.0 * walls.thickness_px
+            and wall_support < 0.50
+        )
+        door_pocket = (
+            share < 0.04
+            and min(width, height) < 4.0 * walls.thickness_px
+            and walls.door_hints is not None
+            and _boundary_fraction(room, walls.door_hints) >= 0.25
+        )
+        blank_exterior = paper >= 0.97 and wall_support < 0.50
+        if room.printed_area_sqm is None and (
+            (semantic_review and room.zone_bounded and room.vlm_vetoed)
+            or vetoed_small
+            or unsupported
+            or narrow
+            or door_pocket
+            or blank_exterior
+        ):
+            dropped.append(room)
+            continue
+        kept.append(room)
+    return kept, dropped
+
+
+def _upgrade_openings_from_support(
+    candidates: list,
+    support_candidates: list,
+    room_index_map: list[int | None],
+    wall_thickness: float,
+) -> list:
+    """Use dropped voids to complete a door span, never to add an opening."""
+
+    def interval(candidate):
+        x0, y0, x1, y1 = candidate.bbox
+        return (x0, x1, (y0 + y1) / 2) if candidate.axis == "h" else (
+            y0,
+            y1,
+            (x0 + x1) / 2,
+        )
+
+    out = list(candidates)
+    for support in support_candidates:
+        mapped_connects = []
+        for side in support.connects:
+            if not isinstance(side, int):
+                mapped_connects.append(side)
+            elif side >= len(room_index_map) or room_index_map[side] is None:
+                break
+            else:
+                mapped_connects.append(room_index_map[side])
+        if len(mapped_connects) != 2:
+            continue
+        support = replace(support, connects=tuple(mapped_connects))
+        s_lo, s_hi, s_perp = interval(support)
+        for index, candidate in enumerate(out):
+            if candidate.axis != support.axis:
+                continue
+            c_lo, c_hi, c_perp = interval(candidate)
+            overlap = min(c_hi, s_hi) - max(c_lo, s_lo)
+            if (
+                abs(c_perp - s_perp) > 2.0 * wall_thickness
+                or overlap < 0.5 * min(c_hi - c_lo, s_hi - s_lo)
+            ):
+                continue
+            stronger = (
+                support.kind_hint == "double_door",
+                support.arc is not None,
+                support.width_px,
+            ) > (
+                candidate.kind_hint == "double_door",
+                candidate.arc is not None,
+                candidate.width_px,
+            )
+            if stronger:
+                out[index] = replace(
+                    support,
+                    marker=candidate.marker,
+                    wall_index=candidate.wall_index,
+                )
+            break
+    return out
+
+
+def _extend_short_opening_hosts(candidates: list, segments: list[WallSegment]):
+    """Keep a support-completed opening inside its emitted host wall."""
+    out = list(segments)
+    for candidate in candidates:
+        if candidate.axis not in {"h", "v"} or not 0 <= candidate.wall_index < len(out):
+            continue
+        segment = out[candidate.wall_index]
+        length = math.dist(segment.start, segment.end)
+        if candidate.width_px <= length + 3:
+            continue
+        x0, y0, x1, y1 = candidate.bbox
+        if candidate.axis == "h":
+            fixed = (segment.start[1] + segment.end[1]) / 2
+            lo = min(segment.start[0], segment.end[0], x0)
+            hi = max(segment.start[0], segment.end[0], x1)
+            out[candidate.wall_index] = replace(
+                segment, start=(lo, fixed), end=(hi, fixed)
+            )
+        else:
+            fixed = (segment.start[0] + segment.end[0]) / 2
+            lo = min(segment.start[1], segment.end[1], y0)
+            hi = max(segment.start[1], segment.end[1], y1)
+            out[candidate.wall_index] = replace(
+                segment, start=(fixed, lo), end=(fixed, hi)
+            )
+    return out
+
+
+def _drop_isolated_fixture_regions(
+    rooms: list[RoomDraft], candidates: list, walls: WallExtraction
+) -> tuple[list[RoomDraft], list[RoomDraft]]:
+    """Drop compact frame/cabinet voids that have no walkable connection."""
+    total_area = sum(room.area_px for room in rooms)
+    connected = {
+        side
+        for candidate in candidates
+        if (
+            candidate.arc is not None
+            or candidate.kind_hint != "window"
+            or all(isinstance(value, int) for value in candidate.connects)
+        )
+        for side in candidate.connects
+        if isinstance(side, int)
+    }
+    kept: list[RoomDraft] = []
+    dropped: list[RoomDraft] = []
+    for index, room in enumerate(rooms):
+        width, height = np.ptp(room.polygon, axis=0)
+        compact = (
+            room.printed_area_sqm is None
+            and room.area_px < 0.01 * total_area
+            and max(width, height) <= 10.0 * walls.thickness_px
+        )
+        isolated = index not in connected
+        (dropped if isolated and (compact or room.source == "vlm") else kept).append(room)
+    return kept, dropped
+
+
+def _clean_room_drafts(
+    rooms: list[RoomDraft], walls: WallExtraction
+) -> list[RoomDraft]:
+    """Clean output polygons after raw contours have served opening detection."""
+    polygons = [
+        Polygon(clean_room_ring(room.polygon, walls.thickness_px, walls.solid))
+        for room in rooms
+    ]
+    # ponytail: O(n²) is simpler and bounded by the handful of rooms in a
+    # floor plan; use a spatial index only if plans grow to hundreds of rooms.
+    for left in range(len(polygons)):
+        for right in range(left + 1, len(polygons)):
+            if polygons[left].intersection(polygons[right]).area <= 1.0:
+                continue
+            loser, winner = (
+                (left, right)
+                if polygons[left].area >= polygons[right].area
+                else (right, left)
+            )
+            difference = polygons[loser].difference(polygons[winner])
+            parts = [difference] if isinstance(difference, Polygon) else [
+                part
+                for part in getattr(difference, "geoms", ())
+                if isinstance(part, Polygon)
+            ]
+            replacement = max(parts, key=lambda part: part.area, default=None)
+            if replacement is not None and replacement.area > 0:
+                polygons[loser] = replacement
+
+    out: list[RoomDraft] = []
+    for room, polygon in zip(rooms, polygons, strict=True):
+        if not polygon.is_valid or polygon.area <= 0:
+            out.append(room)
+            continue
+        ring = np.asarray(polygon.exterior.coords[:-1], dtype=np.float64)
+        closed = np.vstack([ring, ring[:1]])
+        edges = np.linalg.norm(np.diff(closed, axis=0), axis=1)
+        seed = polygon.representative_point()
+        out.append(
+            replace(
+                room,
+                polygon=ring,
+                area_px=float(polygon.area),
+                perimeter_px=float(edges.sum()),
+                edge_lengths_px=[float(edge) for edge in edges],
+                seed=(float(seed.x), float(seed.y)),
+            )
+        )
+    return out
+
+
 def _opening_context(
     candidates: list,
     rooms: list[RoomDraft],
     scale_draft: ScaleDraft | None,
+    segments: list[WallSegment] | None = None,
 ) -> dict[str, str]:
     """Per-marker structural one-liners for the openings prompt: what the
     break connects and its measured width. Adjacency is invisible in a tight
@@ -437,9 +866,23 @@ def _opening_context(
     context: dict[str, str] = {}
     for cand in candidates:
         if scale_draft is not None:
-            per_mm = (
-                scale_draft.px_per_mm_x if cand.axis == "h" else scale_draft.px_per_mm_y
-            )
+            if (
+                cand.axis == "d"
+                and segments is not None
+                and 0 <= cand.wall_index < len(segments)
+            ):
+                segment = segments[cand.wall_index]
+                per_mm = pixels_per_mm_in_direction(
+                    segment.end[0] - segment.start[0],
+                    segment.end[1] - segment.start[1],
+                    scale_draft,
+                )
+            else:
+                per_mm = (
+                    scale_draft.px_per_mm_x
+                    if cand.axis == "h"
+                    else scale_draft.px_per_mm_y
+                )
             width = f"width ≈ {cand.width_px / per_mm:.0f}mm"
         else:
             width = f"width ≈ {cand.width_px:.0f}px"
@@ -632,13 +1075,15 @@ def _assemble(
             continue
         wall_id = f"wall_{len(schema_walls) + 1}"
         wall_id_of_segment[si] = wall_id
-        horizontal = abs(end.x - start.x) >= abs(end.y - start.y)
         thickness_mm = None
         start_mm = end_mm = None
         if scale is not None:
             start_mm, end_mm = pt_mm(*seg.start), pt_mm(*seg.end)
-            thickness_mm = seg.thickness_px * f / (
-                scale.px_per_mm_y if horizontal else scale.px_per_mm_x
+            assert scale_draft is not None
+            dx = seg.end[0] - seg.start[0]
+            dy = seg.end[1] - seg.start[1]
+            thickness_mm = seg.thickness_px / pixels_per_mm_in_direction(
+                -dy, dx, scale_draft
             )
         schema_walls.append(
             Wall(
@@ -660,9 +1105,21 @@ def _assemble(
         x0, y0, x1, y1 = op.bbox
         width_mm = None
         if scale is not None:
-            width_mm = op.width_px * f / (
-                scale.px_per_mm_x if op.axis == "h" else scale.px_per_mm_y
-            )
+            assert scale_draft is not None
+            if op.axis == "d" and 0 <= op.wall_index < len(segments):
+                segment = segments[op.wall_index]
+                per_mm = pixels_per_mm_in_direction(
+                    segment.end[0] - segment.start[0],
+                    segment.end[1] - segment.start[1],
+                    scale_draft,
+                )
+            else:
+                per_mm = (
+                    scale_draft.px_per_mm_x
+                    if op.axis == "h"
+                    else scale_draft.px_per_mm_y
+                )
+            width_mm = op.width_px / per_mm
         is_door = op.element_type == "passage" or op.element_type.endswith("_door")
         is_window = op.element_type == "window" or op.element_type.endswith("_window")
         sill_height_mm = height_mm = None

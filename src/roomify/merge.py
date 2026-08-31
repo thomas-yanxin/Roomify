@@ -29,8 +29,15 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from roomify.rooms import CVRoom
-from roomify.schema import OUTDOOR_ROOM_TYPES, ParseWarning, Scale, Unresolved
-from roomify.vlm import ChainRead, OpeningsRead, RoomRead
+from roomify.schema import EXTERIOR, OUTDOOR_ROOM_TYPES, ParseWarning, Scale, Unresolved
+from roomify.vlm import (
+    ChainRead,
+    ExtraRoom,
+    OpeningsRead,
+    RoomEntry,
+    RoomRead,
+    SpatialRoomRead,
+)
 from roomify.walls import WallExtraction
 
 if TYPE_CHECKING:  # openings imports merge; annotate without the cycle
@@ -60,6 +67,8 @@ class RoomDraft:
     marker: str | None = None  # overlay marker id, for warnings/debug
     zone_bounded: bool = False  # boundary includes a dashed zone divider
     recovered: bool = False  # reclaimed from uncovered floor space
+    spatially_grounded: bool = False  # printed label position lies in this polygon
+    vlm_vetoed: bool = False  # semantic veto, accepted only with physical size support
 
 
 @dataclass
@@ -91,14 +100,317 @@ class ScaleDraft:
         )
 
 
+def pixels_per_mm_in_direction(dx: float, dy: float, scale: ScaleDraft) -> float:
+    """Directional scale for anisotropically resized drawings."""
+    length = math.hypot(dx, dy)
+    if length == 0:
+        return math.sqrt(scale.px_per_mm_x * scale.px_per_mm_y)
+    mm_per_px = math.hypot(
+        dx / length / scale.px_per_mm_x,
+        dy / length / scale.px_per_mm_y,
+    )
+    return 1.0 / mm_per_px
+
+
 @dataclass
 class MergeOutcome:
     rooms: list[RoomDraft]
     warnings: list[ParseWarning] = field(default_factory=list)
     unresolved: list[Unresolved] = field(default_factory=list)
+    zone_boundaries: list[tuple[tuple[float, float], tuple[float, float]]] = field(
+        default_factory=list
+    )
 
 
-MIN_FREE_FLOOR = 0.30  # of an extra room's box; see merge_rooms
+def _with_polygon(room: RoomDraft, polygon, **changes) -> RoomDraft:
+    ring = np.asarray(polygon.exterior.coords[:-1], dtype=np.float64)
+    edges = np.linalg.norm(np.diff(np.vstack((ring, ring[:1])), axis=0), axis=1)
+    seed = polygon.representative_point()
+    return replace(
+        room,
+        polygon=ring,
+        area_px=float(polygon.area),
+        perimeter_px=float(edges.sum()),
+        edge_lengths_px=[float(edge) for edge in edges],
+        seed=(float(seed.x), float(seed.y)),
+        **changes,
+    )
+
+
+def _split_claimed_extra(
+    rooms: list[RoomDraft],
+    bbox: tuple[float, float, float, float],
+    label_point: tuple[float, float] | None = None,
+    expected_area_px: float | None = None,
+):
+    """Split a wall-shaped alcove that the VLM found inside a larger CV room."""
+    from shapely.geometry import LineString, MultiLineString, Point, Polygon, box
+    from shapely.ops import split, unary_union
+
+    target = box(*bbox)
+    anchor = Point(label_point) if label_point is not None else target.centroid
+    best = None
+    for room_index, room in enumerate(rooms):
+        parent = Polygon(room.polygon)
+        if not parent.is_valid:
+            parent = parent.buffer(0)
+        if parent.is_empty or (
+            not parent.intersects(target)
+            and parent.distance(anchor) > math.sqrt(expected_area_px or target.area)
+        ):
+            continue
+        min_x, min_y, max_x, max_y = parent.bounds
+        for x, y in parent.exterior.coords[:-1]:
+            for end in (
+                (min_x - 1, y),
+                (max_x + 1, y),
+                (x, min_y - 1),
+                (x, max_y + 1),
+            ):
+                pieces = [
+                    piece
+                    for piece in split(parent, LineString(((x, y), end))).geoms
+                    if isinstance(piece, Polygon) and piece.area > 1
+                ]
+                if len(pieces) < 2:
+                    continue
+                for piece in pieces:
+                    intersection = piece.intersection(target).area
+                    overlap = intersection / max(min(piece.area, target.area), 1.0)
+                    area_fit = min(piece.area, target.area) / max(piece.area, target.area)
+                    rest = unary_union(
+                        [candidate for candidate in pieces if candidate != piece]
+                    )
+                    if not isinstance(rest, Polygon):
+                        continue
+                    if expected_area_px:
+                        area_error = abs(math.log(piece.area / expected_area_px))
+                        distance = piece.distance(anchor) / math.sqrt(expected_area_px)
+                        if (
+                            area_error > math.log(2)
+                            or distance > 0.75
+                            or rest.area < 0.5 * expected_area_px
+                        ):
+                            continue
+                        score = (-(area_error + distance), -piece.area)
+                    else:
+                        if (
+                            overlap < 0.25
+                            or area_fit < 0.5
+                            or rest.area < 0.5 * target.area
+                        ):
+                            continue
+                        score = (overlap * area_fit, -piece.area)
+                    shared = piece.boundary.intersection(rest.boundary)
+                    lines = (
+                        [shared]
+                        if isinstance(shared, LineString)
+                        else list(shared.geoms)
+                        if isinstance(shared, MultiLineString)
+                        else []
+                    )
+                    boundary = max(lines, key=lambda line: line.length, default=None)
+                    if boundary is None or boundary.length <= 1:
+                        continue
+                    if best is None or score > best[0]:
+                        best = (score, room_index, rest, piece, boundary)
+    return None if best is None else best[1:]
+
+
+def ground_room_inventory(
+    cv_rooms: list[CVRoom],
+    marker_read: RoomRead | None,
+    spatial_read: SpatialRoomRead | None,
+    image_shape: tuple[int, int],
+) -> RoomRead | None:
+    """Attach inventory labels by their printed position, never list order."""
+    if spatial_read is None or not spatial_read.rooms:
+        return marker_read
+
+    from shapely.geometry import Point, Polygon
+
+    marker_read = marker_read or RoomRead()
+    h, w = image_shape
+    polygons = [Polygon(room.polygon) for room in cv_rooms]
+
+    def same_area(left: float | None, right: float | None) -> bool:
+        if left is None or right is None:
+            return True
+        return math.isclose(left, right, rel_tol=0.02, abs_tol=0.05)
+
+    groups: dict[int, list[int]] = {}
+    unmatched: set[int] = set(range(len(spatial_read.rooms)))
+    for item_index, item in enumerate(spatial_read.rooms):
+        y0, x0, y1, x1 = item.label_box_2d
+        point = Point((x0 + x1) * w / 2000.0, (y0 + y1) * h / 2000.0)
+        hits = [
+            room_index
+            for room_index, polygon in enumerate(polygons)
+            if not polygon.is_empty and polygon.buffer(1).covers(point)
+        ]
+        if hits:
+            groups.setdefault(min(hits, key=lambda i: polygons[i].area), []).append(item_index)
+
+    assigned: dict[int, int] = {}
+    for room_index, item_indices in groups.items():
+        marker = marker_read.rooms.get(str(room_index + 1))
+        corroborated = [
+            item_index
+            for item_index in item_indices
+            if marker is not None and marker.name == spatial_read.rooms[item_index].name
+        ]
+        candidates = corroborated or item_indices
+        chosen = max(
+            candidates,
+            key=lambda i: (
+                spatial_read.rooms[i].printed_area_sqm or 0.0,
+                (spatial_read.rooms[i].room_box_2d[2] - spatial_read.rooms[i].room_box_2d[0])
+                * (
+                    spatial_read.rooms[i].room_box_2d[3]
+                    - spatial_read.rooms[i].room_box_2d[1]
+                ),
+            ),
+        )
+        assigned[room_index] = chosen
+        unmatched.discard(chosen)
+
+    ratios = [
+        cv_rooms[room_index].area_px / item.printed_area_sqm
+        for room_index, item_index in assigned.items()
+        if (item := spatial_read.rooms[item_index]).printed_area_sqm
+    ]
+    median_ratio = statistics.median(ratios) if len(ratios) >= 3 else None
+    if median_ratio:
+        for item_index in sorted(unmatched):
+            item = spatial_read.rooms[item_index]
+            if not item.printed_area_sqm:
+                continue
+            expected = item.printed_area_sqm * median_ratio
+            available = [index for index in range(len(cv_rooms)) if index not in assigned]
+            if not available:
+                break
+            best = min(
+                available,
+                key=lambda index: abs(math.log(cv_rooms[index].area_px / expected)),
+            )
+            if abs(math.log(cv_rooms[best].area_px / expected)) <= math.log(RECONCILE_RATIO):
+                assigned[best] = item_index
+                unmatched.discard(item_index)
+
+    entries: dict[str, RoomEntry] = {}
+    for room_index, item_index in assigned.items():
+        item = spatial_read.rooms[item_index]
+        marker = marker_read.rooms.get(str(room_index + 1))
+        printed = item.printed_area_sqm
+        if marker is not None and marker.name == item.name and marker.printed_area_sqm:
+            if printed is None or median_ratio is None:
+                printed = marker.printed_area_sqm
+            else:
+                printed = min(
+                    (printed, marker.printed_area_sqm),
+                    key=lambda area: abs(
+                        math.log(cv_rooms[room_index].area_px / area / median_ratio)
+                    ),
+                )
+        room_type = item.room_type
+        if room_type == "unknown_space" and marker is not None and marker.name == item.name:
+            room_type = marker.room_type
+        entries[str(room_index + 1)] = RoomEntry(
+            name=item.name,
+            room_type=room_type,
+            printed_area_sqm=printed,
+            confidence=item.confidence,
+            not_a_room=item.not_a_room,
+            spatially_grounded=True,
+        )
+
+    spatial_pairs = {
+        (item.name, round(item.printed_area_sqm, 2))
+        for item in spatial_read.rooms
+        if item.name and item.printed_area_sqm
+    }
+    assigned_pairs = {
+        (item.name, round(item.printed_area_sqm, 2))
+        for item_index in assigned.values()
+        if (item := spatial_read.rooms[item_index]).name and item.printed_area_sqm
+    }
+    for marker_id, marker_entry in marker_read.rooms.items():
+        if marker_id in entries or marker_entry.not_a_room:
+            continue
+        if not marker_entry.name and marker_entry.room_type == "unknown_space":
+            continue
+        if marker_entry.printed_area_sqm and (
+            marker_entry.name,
+            round(marker_entry.printed_area_sqm, 2),
+        ) in assigned_pairs:
+            continue
+        entries[marker_id] = marker_entry
+
+    extras: list[ExtraRoom] = []
+    consumed_marker_extras: set[int] = set()
+    for item_index in sorted(unmatched):
+        item = spatial_read.rooms[item_index]
+        if item.not_a_room:
+            continue
+        corroborated_extras = [
+            (index, extra)
+            for index, extra in enumerate(marker_read.extra_rooms)
+            if same_area(extra.printed_area_sqm, item.printed_area_sqm)
+            and (
+                extra.room_type == item.room_type
+                or "unknown_space" in (extra.room_type, item.room_type)
+            )
+        ]
+        marker_extra = (
+            corroborated_extras[0][1] if len(corroborated_extras) == 1 else None
+        )
+        if marker_extra is not None:
+            consumed_marker_extras.add(corroborated_extras[0][0])
+        extras.append(
+            ExtraRoom(
+                name=marker_extra.name if marker_extra and marker_extra.name else item.name,
+                room_type=(
+                    marker_extra.room_type
+                    if marker_extra and marker_extra.room_type != "unknown_space"
+                    else item.room_type
+                ),
+                printed_area_sqm=item.printed_area_sqm or (
+                    marker_extra.printed_area_sqm if marker_extra else None
+                ),
+                confidence=max(item.confidence, marker_extra.confidence if marker_extra else 0),
+                box_2d=item.room_box_2d,
+                label_box_2d=item.label_box_2d,
+                expected_area_px=(
+                    item.printed_area_sqm * median_ratio
+                    if item.printed_area_sqm and median_ratio
+                    else None
+                ),
+                spatially_grounded=True,
+            )
+        )
+    spatial_type_areas = {
+        (item.room_type, round(item.printed_area_sqm, 2))
+        for item in spatial_read.rooms
+        if item.printed_area_sqm
+    }
+    for index, extra in enumerate(marker_read.extra_rooms):
+        pair = (
+            (extra.name, round(extra.printed_area_sqm, 2))
+            if extra.name and extra.printed_area_sqm
+            else None
+        )
+        type_area = (
+            (extra.room_type, round(extra.printed_area_sqm, 2))
+            if extra.printed_area_sqm
+            else None
+        )
+        if (
+            index not in consumed_marker_extras
+            and pair not in spatial_pairs
+            and type_area not in spatial_type_areas
+        ):
+            extras.append(extra)
+    return RoomRead(rooms=entries, extra_rooms=extras)
 
 
 def merge_rooms(
@@ -112,13 +424,10 @@ def merge_rooms(
     Marker ids are 1-based strings matching render_room_overlay's numbering.
 
     ``free_floor`` is the floor inside the building that no CV polygon
-    claims (``rooms.uncovered_floor``). An extra room needs somewhere to
-    exist: the model reports every printed label it sees, so the zones of an
-    open-plan space (走廊/玄关 inside a 客餐厅) come back as "unmarkered
-    rooms" and used to be emitted as boxes lying ON the measured room —
-    double-counting its area and overlapping its polygon. Measured on the
-    corpus, the one genuinely missed room stood on 65% free floor while
-    every redundant box stood on 0-7%.
+    claims (``rooms.uncovered_floor``). A normal extra room must place its
+    center on that floor. A three-sided labelled alcove may already be part
+    of a larger CV polygon; in that case an orthogonal reflex-vertex cut
+    separates it without overlapping or inventing a wall.
     """
     out = MergeOutcome(rooms=[])
     entries = read.rooms if read is not None else {}
@@ -156,10 +465,20 @@ def merge_rooms(
             out.warnings.append(
                 ParseWarning(
                     code="room_vetoed",
-                    message=f"VLM judged marker {marker} not to be a room; polygon dropped",
+                    message=(
+                        f"VLM judged marker {marker} not to be a room; semantics ignored "
+                        "and CV geometry kept for physical validation"
+                    ),
                     ref=marker,
                 )
             )
+            out.unresolved.append(
+                Unresolved(
+                    path=f"rooms/{marker}/name",
+                    reason="VLM room veto needs physical validation",
+                )
+            )
+            out.rooms.append(replace(draft, vlm_vetoed=True))
             continue
         out.rooms.append(
             replace(
@@ -169,36 +488,141 @@ def merge_rooms(
                 name=entry.name,
                 room_type=entry.room_type,
                 printed_area_sqm=entry.printed_area_sqm,
+                spatially_grounded=entry.spatially_grounded,
             )
         )
 
     h, w = image_shape
     for j, extra in enumerate(read.extra_rooms if read is not None else []):
+        marker = f"vlm_{j + 1}"
+        if extra.not_a_room:
+            out.warnings.append(
+                ParseWarning(
+                    code="room_vetoed",
+                    message="VLM judged an unclaimed labelled region not to be a room",
+                    ref=marker,
+                )
+            )
+            continue
         y0, x0, y1, x1 = (v / 1000.0 for v in extra.box_2d)
         polygon = np.array(
             [[x0 * w, y0 * h], [x1 * w, y0 * h], [x1 * w, y1 * h], [x0 * w, y1 * h]],
             dtype=np.float64,
         )
         width, height = (x1 - x0) * w, (y1 - y0) * h
-        marker = f"vlm_{j + 1}"
         if free_floor is not None:
-            box = free_floor[
+            free_box = free_floor[
                 max(0, int(y0 * h)) : int(y1 * h) + 1,
                 max(0, int(x0 * w)) : int(x1 * w) + 1,
             ]
-            if box.size == 0 or float((box > 0).mean()) < MIN_FREE_FLOOR:
-                out.warnings.append(
-                    ParseWarning(
-                        code="room_already_measured",
-                        message=(
-                            f"VLM reported {extra.name or 'an extra room'} where no "
-                            "unclaimed floor remains; it is a zone of an "
-                            "already-measured room, not a room of its own"
-                        ),
-                        ref=marker,
+            box_height, box_width = free_box.shape
+            middle = (
+                free_box[
+                    box_height // 3 : max(box_height // 3 + 1, 2 * box_height // 3),
+                    box_width // 3 : max(box_width // 3 + 1, 2 * box_width // 3),
+                ]
+                if free_box.size
+                else free_box
+            )
+            if middle.size == 0 or not middle.any():
+                label_point = None
+                if extra.label_box_2d is not None:
+                    ly0, lx0, ly1, lx1 = extra.label_box_2d
+                    label_point = ((lx0 + lx1) * w / 2000, (ly0 + ly1) * h / 2000)
+                claimed = (
+                    _split_claimed_extra(
+                        out.rooms,
+                        (x0 * w, y0 * h, x1 * w, y1 * h),
+                        label_point,
+                        extra.expected_area_px,
+                    )
+                    if extra.expected_area_px is not None
+                    else None
+                )
+                if claimed is not None:
+                    parent_index, parent, extra_polygon, boundary = claimed
+                    parent_room = out.rooms[parent_index]
+                    out.rooms[parent_index] = _with_polygon(
+                        parent_room, parent, zone_bounded=True
+                    )
+                    extra_room = _with_polygon(
+                        out.rooms[parent_index],
+                        extra_polygon,
+                        source="cv+vlm",
+                        confidence=min(extra.confidence, 0.6),
+                        name=extra.name,
+                        room_type=extra.room_type,
+                        printed_area_sqm=extra.printed_area_sqm,
+                        marker=marker,
+                        zone_bounded=True,
+                        recovered=False,
+                        spatially_grounded=extra.spatially_grounded,
+                    )
+                    out.rooms.append(extra_room)
+                    coords = list(boundary.coords)
+                    out.zone_boundaries.append((tuple(coords[0]), tuple(coords[-1])))
+                    out.warnings.append(
+                        ParseWarning(
+                            code="room_split_from_open_zone",
+                            message=(
+                                f"room {extra.name or marker} was separated from a larger "
+                                "CV region at its wall-defined open edge"
+                            ),
+                            ref=marker,
+                        )
+                    )
+                    continue
+                from shapely.geometry import Point, Polygon
+
+                box_area = width * height
+                claimed_box = Polygon(polygon)
+                new_labelled_room = bool(
+                    extra.spatially_grounded
+                    and extra.name
+                    and extra.printed_area_sqm
+                    and extra.expected_area_px
+                    and label_point
+                    and 0.5 <= box_area / extra.expected_area_px <= 2.0
+                    and not any(
+                        Polygon(room.polygon).covers(Point(label_point))
+                        for room in out.rooms
+                    )
+                    and all(
+                        Polygon(room.polygon).intersection(claimed_box).area
+                        <= 0.25 * box_area
+                        for room in out.rooms
                     )
                 )
-                continue
+                if not new_labelled_room:
+                    out.warnings.append(
+                        ParseWarning(
+                            code="room_already_measured",
+                            message=(
+                                f"VLM reported {extra.name or 'an extra room'} where no "
+                                "unclaimed floor remains; it is a zone of an "
+                                "already-measured room, not a room of its own"
+                            ),
+                            ref=marker,
+                        )
+                    )
+                    continue
+        if not (
+            extra.spatially_grounded
+            and extra.name
+            and extra.printed_area_sqm
+            and extra.expected_area_px
+        ):
+            out.warnings.append(
+                ParseWarning(
+                    code="room_without_physical_evidence",
+                    message=(
+                        f"VLM suggested {extra.name or 'an extra room'}, but no printed "
+                        "label with area anchors missing floor geometry; it is not emitted"
+                    ),
+                    ref=marker,
+                )
+            )
+            continue
         out.rooms.append(
             RoomDraft(
                 polygon=polygon,
@@ -212,6 +636,7 @@ def merge_rooms(
                 room_type=extra.room_type,
                 printed_area_sqm=extra.printed_area_sqm,
                 marker=marker,
+                spatially_grounded=extra.spatially_grounded,
             )
         )
         out.warnings.append(
@@ -274,6 +699,7 @@ def reconcile_rooms(
         for i, r in enumerate(rooms)
         if r.source != "vlm"
         and r.printed_area_sqm
+        and not r.spatially_grounded
         and misfit_of(r.area_px, r.printed_area_sqm) > log_bad
     ]
     unnamed = [
@@ -301,8 +727,9 @@ def reconcile_rooms(
 
     out = list(rooms)
     for i in misfits:  # detach the misfit labels; slots start clean
-        out[i] = replace(out[i], name=None, printed_area_sqm=None,
-                         room_type="unknown_space", confidence=0.3)
+        out[i] = replace(
+            out[i], name=None, printed_area_sqm=None, room_type="unknown_space", confidence=0.3
+        )
 
     gap = max(8.0, 1.5 * wall_thickness_px)
     used: set[int] = set()
@@ -325,10 +752,13 @@ def reconcile_rooms(
                     group_m = abs(math.log(max(total, 1e-9) / expected))
                     if group_m > math.log(1 + MERGE_SUM_TOL):
                         continue
-                    if all(
-                        polys[a].distance(polys[b]) <= gap
-                        for a, b in itertools.combinations(combo, 2)
-                    ) and group_m < best_group_m:
+                    if (
+                        all(
+                            polys[a].distance(polys[b]) <= gap
+                            for a, b in itertools.combinations(combo, 2)
+                        )
+                        and group_m < best_group_m
+                    ):
                         best_group = combo
                         best_group_m = group_m
         if best_i is not None:
@@ -350,9 +780,9 @@ def reconcile_rooms(
                 )
             )
         elif best_group is not None:
-            merged_poly = unary_union(
-                [polys[i] for i in best_group]
-            ).buffer(gap / 2).buffer(-gap / 2)
+            merged_poly = (
+                unary_union([polys[i] for i in best_group]).buffer(gap / 2).buffer(-gap / 2)
+            )
             if merged_poly.geom_type == "MultiPolygon":
                 merged_poly = max(merged_poly.geoms, key=lambda g: g.area)
             ring = np.asarray(merged_poly.exterior.coords[:-1], dtype=np.float64)
@@ -432,15 +862,26 @@ def estimate_scale(
     x_candidates = _axis_candidates(chains, ("top", "bottom"), extent_x)
     y_candidates = _axis_candidates(chains, ("left", "right"), extent_y)
 
-    # Median of per-room area ratios: px² per mm². Only CV-measured polygons
-    # participate — VLM bbox geometry is approximate by construction, and
-    # zone-bounded rooms (dashed functional splits) measure against printed
-    # values too loosely to calibrate a scale.
-    ratios = [
+    # Median of per-room area ratios: px² per mm². VLM bbox geometry is never
+    # calibration evidence; solid-wall CV rooms are preferred over dashed
+    # functional zones when enough of them exist.
+    primary_ratios = [
         r.area_px / (r.printed_area_sqm * 1e6)
         for r in rooms
         if r.printed_area_sqm and r.source != "vlm" and not r.zone_bounded
     ]
+    # Some listing exports draw every room split as a dashed functional
+    # divider. Excluding all of them throws away the only independent scale
+    # evidence, even when the labelled polygons agree closely.
+    ratios = (
+        primary_ratios
+        if len(primary_ratios) >= MIN_ROOMS_FOR_AREA_SCALE
+        else [
+            r.area_px / (r.printed_area_sqm * 1e6)
+            for r in rooms
+            if r.printed_area_sqm and r.source != "vlm"
+        ]
+    )
     area_scale_sq = statistics.median(ratios) if len(ratios) >= MIN_ROOMS_FOR_AREA_SCALE else None
     from_areas = area_scale_sq**0.5 if area_scale_sq else None
 
@@ -486,6 +927,9 @@ def estimate_scale(
                 warnings,
             )
         confidence = "high" if disagreement <= AGREE_HIGH else "medium"
+        # Chains determine anisotropy; printed areas determine magnitude.
+        normalise = math.sqrt(area_scale_sq / (sx * sy))
+        sx, sy = sx * normalise, sy * normalise
         return (
             ScaleDraft(
                 px_per_mm_x=sx,
@@ -652,18 +1096,27 @@ _OPEN_PLAN_ROOMS = {
 }
 # Legend elements that legitimately stand free of walls; anything else the
 # VLM reports as an "extra" is an opening claim without usable geometry.
-_FREE_STANDING = {"stair", "railing", "elevator", "escalator",
-                  "equipment_platform", "column", "chimney", "unknown_symbol"}
+_FREE_STANDING = {
+    "stair",
+    "railing",
+    "elevator",
+    "escalator",
+    "equipment_platform",
+    "column",
+    "chimney",
+    "unknown_symbol",
+}
 
 
-def _both_sides_indoor(
-    connects: tuple[int | str, int | str], rooms: list[RoomDraft]
-) -> bool:
-    return all(
-        isinstance(side, int)
-        and 0 <= side < len(rooms)
-        and rooms[side].room_type not in OUTDOOR_ROOM_TYPES
+def _both_sides_are_rooms(connects: tuple[int | str, int | str], rooms: list[RoomDraft]) -> bool:
+    return all(isinstance(side, int) and 0 <= side < len(rooms) for side in connects)
+
+
+def _both_sides_indoor(connects: tuple[int | str, int | str], rooms: list[RoomDraft]) -> bool:
+    return _both_sides_are_rooms(connects, rooms) and all(
+        rooms[side].room_type not in OUTDOOR_ROOM_TYPES
         for side in connects
+        if isinstance(side, int)
     )
 
 
@@ -677,13 +1130,9 @@ def _window_conflicts_with_privacy_room(
     )
 
 
-def _both_sides_open_plan(
-    connects: tuple[int | str, int | str], rooms: list[RoomDraft]
-) -> bool:
+def _both_sides_open_plan(connects: tuple[int | str, int | str], rooms: list[RoomDraft]) -> bool:
     return _both_sides_indoor(connects, rooms) and all(
-        rooms[side].room_type in _OPEN_PLAN_ROOMS
-        for side in connects
-        if isinstance(side, int)
+        rooms[side].room_type in _OPEN_PLAN_ROOMS for side in connects if isinstance(side, int)
     )
 
 
@@ -708,6 +1157,23 @@ MAX_INTERIOR_SPAN_MM = 2500.0
 # the wall, frame and reveal included, and single_door widths run
 # continuously from 1112 to 1375mm with no gap to cut at.
 MAX_DOOR_SPAN_MM = 3500.0
+# Below this, a classified door/passage is a drawing notch rather than a
+# route a resident can use. The corpus's smallest credible opening is 470mm.
+MIN_WALK_THROUGH_SPAN_MM = 450.0
+# A plain or threshold-drawn opening below this span is a single-leaf door;
+# wider parallel tracks are sliding leaves and wider plain gaps are passages.
+MAX_SINGLE_DOOR_SPAN_MM = 1400.0
+MIN_WALK_THROUGH_THICKNESSES = 2.5
+MAX_SINGLE_DOOR_THICKNESSES = 7.5
+MAX_DOOR_THICKNESSES = 16.0
+MAX_EXTERIOR_WINDOW_THICKNESSES = 30.0
+MAX_SHALLOW_EDGE_DEPTH_THICKNESSES = 15.0
+MIN_GLAZED_FACADE_FRONTAGE_SHARE = 0.50
+MIN_RAILING_FRONTAGE_SHARE = 0.75
+MIN_WHOLE_HOST_OPENING_SHARE = 0.80
+# Below this share a CV "room" is commonly furniture or a door-sweep fragment;
+# keep its openings unresolved until room semantics confirm it.
+MIN_OPENING_ROOM_SHARE = 0.015
 _WALK_THROUGH = {
     "passage",
     "single_door",
@@ -715,6 +1181,145 @@ _WALK_THROUGH = {
     "sliding_door",
     "folding_door",
 }
+
+
+def _opening_span_mm(
+    candidate: OpeningCandidate,
+    scale: ScaleDraft | None,
+    segments: list[WallSegment] | None,
+) -> float | None:
+    if scale is None:
+        return None
+    if candidate.axis == "d" and segments is not None and 0 <= candidate.wall_index < len(segments):
+        segment = segments[candidate.wall_index]
+        per_mm = pixels_per_mm_in_direction(
+            segment.end[0] - segment.start[0],
+            segment.end[1] - segment.start[1],
+            scale,
+        )
+    else:
+        per_mm = scale.px_per_mm_x if candidate.axis == "h" else scale.px_per_mm_y
+    return candidate.width_px / per_mm if per_mm > 0 else None
+
+
+def _cv_opening_type(
+    candidate: OpeningCandidate,
+    rooms: list[RoomDraft],
+    scale: ScaleDraft | None,
+    segments: list[WallSegment] | None,
+) -> str:
+    """Resolve common symbols from tracks, span, and the two wall sides."""
+    span_mm = _opening_span_mm(candidate, scale, segments)
+    host = (
+        segments[candidate.wall_index]
+        if segments is not None and 0 <= candidate.wall_index < len(segments)
+        else None
+    )
+    thicknesses = candidate.width_px / host.thickness_px if host is not None else None
+    if span_mm is not None:
+        walkable = MIN_WALK_THROUGH_SPAN_MM <= span_mm <= MAX_DOOR_SPAN_MM
+        single = walkable and span_mm <= MAX_SINGLE_DOOR_SPAN_MM
+        if thicknesses is not None and thicknesses < MIN_WALK_THROUGH_THICKNESSES:
+            walkable = single = False
+    elif thicknesses is not None:
+        walkable = MIN_WALK_THROUGH_THICKNESSES <= thicknesses <= MAX_DOOR_THICKNESSES
+        single = walkable and thicknesses <= MAX_SINGLE_DOOR_THICKNESSES
+    else:
+        walkable = single = False
+
+    too_wide_for_door = (
+        span_mm > MAX_DOOR_SPAN_MM
+        if span_mm is not None
+        else thicknesses is not None and thicknesses > MAX_DOOR_THICKNESSES
+    )
+
+    total_room_area = sum(room.area_px for room in rooms)
+    connects_rooms = _both_sides_are_rooms(candidate.connects, rooms) and all(
+        rooms[side].area_px >= MIN_OPENING_ROOM_SHARE * total_room_area
+        for side in candidate.connects
+        if isinstance(side, int)
+    )
+    shallow_frontage_share = 0.0
+    if host is not None and candidate.axis in {"h", "v"}:
+        for side in candidate.connects:
+            if not isinstance(side, int):
+                continue
+            room_width, room_height = np.ptp(rooms[side].polygon, axis=0)
+            frontage, depth = (
+                (room_width, room_height)
+                if candidate.axis == "h"
+                else (room_height, room_width)
+            )
+            if (
+                depth <= MAX_SHALLOW_EDGE_DEPTH_THICKNESSES * host.thickness_px
+                and candidate.width_px <= 1.2 * frontage
+            ):
+                shallow_frontage_share = max(
+                    shallow_frontage_share, candidate.width_px / max(frontage, 1.0)
+                )
+    if candidate.kind_hint == "double_door":
+        return "double_door"
+    if candidate.kind_hint == "passage":
+        return "passage"
+    if (
+        EXTERIOR in candidate.connects
+        and too_wide_for_door
+        and any(
+            isinstance(side, int)
+            and 0 <= side < len(rooms)
+            and rooms[side].room_type in OUTDOOR_ROOM_TYPES
+            for side in candidate.connects
+        )
+    ):
+        return "railing"
+    if candidate.kind_hint == "window":
+        if (
+            EXTERIOR in candidate.connects
+            and too_wide_for_door
+            and shallow_frontage_share >= MIN_RAILING_FRONTAGE_SHARE
+        ):
+            # A long open edge around a shallow exterior strip is a balcony
+            # railing, not a wall opening or glazing symbol.
+            return "railing"
+        if connects_rooms and too_wide_for_door:
+            if shallow_frontage_share >= MIN_GLAZED_FACADE_FRONTAGE_SHARE:
+                return "floor_to_ceiling_window"
+            # A whole missing partition between deep rooms can look like a
+            # multi-track window; do not turn it into an interior facade.
+            return "unknown_symbol"
+        if (
+            EXTERIOR in candidate.connects
+            and thicknesses is not None
+            and thicknesses > MAX_EXTERIOR_WINDOW_THICKNESSES
+        ):
+            # A whole balcony edge is a railing or glazed facade; the generic
+            # window class would invent a wall opening where CV cannot choose.
+            return "unknown_symbol"
+        if connects_rooms and single:
+            return "single_door"
+        if connects_rooms and walkable:
+            return "sliding_door"
+        return "window"
+    if connects_rooms and single:
+        return "single_door"
+    if single and candidate.arc is not None:
+        return "single_door"
+    wide_door = (
+        span_mm > MAX_SINGLE_DOOR_SPAN_MM
+        if span_mm is not None
+        else thicknesses is not None and thicknesses > MAX_SINGLE_DOOR_THICKNESSES
+    )
+    if (
+        connects_rooms
+        and wide_door
+        and shallow_frontage_share >= MIN_GLAZED_FACADE_FRONTAGE_SHARE
+    ):
+        return "sliding_door"
+    if connects_rooms and walkable and not single:
+        return "passage"
+    if EXTERIOR in candidate.connects:
+        return "window"
+    return "unknown_symbol"
 
 
 def merge_openings(
@@ -730,13 +1335,113 @@ def merge_openings(
     warnings: list[ParseWarning] = []
     unresolved: list[Unresolved] = []
     entries = read.candidates if read is not None else {}
+    leaf_spans = [
+        candidate.arc.radius_px
+        for candidate in candidates
+        if candidate.arc is not None and candidate.arc.radius_px is not None
+    ]
+    wide_track_px = 1.5 * statistics.median(leaf_spans) if len(leaf_spans) >= 2 else math.inf
 
-    for cand in candidates:
+    sidelights = {
+        candidate.marker
+        for candidate in candidates
+        if candidate.kind_hint == "window"
+        and candidate.arc is None
+        and any(
+            _window_beside_swing(candidate, other, segments)
+            for other in candidates
+            if other.arc is not None
+        )
+    }
+    cv_rooms = rooms or []
+    cv_types = [_cv_opening_type(cand, cv_rooms, scale, segments) for cand in candidates]
+    railing_rooms = {
+        side
+        for candidate, cv_type in zip(candidates, cv_types, strict=True)
+        if cv_type == "railing"
+        for side in candidate.connects
+        if isinstance(side, int) and 0 <= side < len(cv_rooms)
+    }
+    exterior_axes: dict[int, set[str]] = {}
+    for candidate, cv_type in zip(candidates, cv_types, strict=True):
+        if (
+            EXTERIOR in candidate.connects
+            and cv_type in _WINDOWS | {"railing"}
+            and candidate.axis in {"h", "v"}
+        ):
+            for side in candidate.connects:
+                if isinstance(side, int) and 0 <= side < len(cv_rooms):
+                    exterior_axes.setdefault(side, set()).add(candidate.axis)
+    total_room_area = sum(room.area_px for room in cv_rooms)
+    sliding_widths = {
+        room_index: max(
+            (
+                candidate.width_px
+                for candidate, cv_type in zip(candidates, cv_types, strict=True)
+                if room_index in candidate.connects and cv_type == "sliding_door"
+            ),
+            default=0.0,
+        )
+        for room_index in exterior_axes
+        if cv_rooms[room_index].area_px <= 0.05 * total_room_area
+    }
+    track_rooms = railing_rooms | {
+        room_index
+        for room_index, axes in exterior_axes.items()
+        if axes == {"h", "v"}
+        and cv_rooms[room_index].area_px <= 0.05 * total_room_area
+        and sum(
+            room_index in candidate.connects and cv_type in _WALK_THROUGH
+            for candidate, cv_type in zip(candidates, cv_types, strict=True)
+        )
+        == 1
+    }
+    for cand, cv_type in zip(candidates, cv_types, strict=True):
+        zone_divider = (
+            cv_type == "single_door"
+            and cand.kind_hint == "doorlike"
+            and cand.arc is None
+            and _both_sides_are_rooms(cand.connects, cv_rooms)
+            and all(cv_rooms[side].zone_bounded for side in cand.connects if isinstance(side, int))
+        )
+        balcony_track = (
+            cv_type == "single_door"
+            and cand.arc is None
+            and cand.marker not in sidelights
+            and any(side in track_rooms for side in cand.connects if isinstance(side, int))
+        )
+        balcony_window = (
+            cv_type == "single_door"
+            and cand.kind_hint == "doorlike"
+            and cand.arc is None
+            and any(
+                isinstance(side, int)
+                and cand.width_px < 0.75 * sliding_widths.get(side, 0.0)
+                for side in cand.connects
+            )
+        )
+        if zone_divider:
+            cv_type = "passage"
+        elif balcony_window:
+            cv_type = "window"
+        elif balcony_track:
+            cv_type = "sliding_door"
+        if (
+            cv_type == "single_door"
+            and cand.kind_hint == "window"
+            and cand.arc is None
+            and cand.width_px > wide_track_px
+            and _both_sides_are_rooms(cand.connects, rooms or [])
+        ):
+            cv_type = "sliding_door"
+        if cv_type == "single_door" and cand.marker in sidelights:
+            cv_type = "window"
+        span_mm = _opening_span_mm(cand, scale, segments)
         entry = entries.get(cand.marker)
         if entry is None:
-            element_type = "window" if cand.kind_hint == "window" else "unknown_symbol"
+            element_type = cv_type
             source, confidence, raw_text = "cv", 0.35, None
-            if cand.arc is None:  # an arc classifies it below; nothing unresolved
+            if element_type == "unknown_symbol" and cand.arc is None:
                 unresolved.append(
                     Unresolved(
                         path=f"openings/{cand.marker}/element_type",
@@ -756,13 +1461,52 @@ def merge_openings(
             element_type = entry.element_type
             source, confidence, raw_text = "cv+vlm", entry.confidence, entry.raw_text
 
+        if element_type not in _WINDOWS | _WALK_THROUGH | {"railing", "unknown_symbol"}:
+            warnings.append(
+                ParseWarning(
+                    code="opening_legend_conflict",
+                    message=(
+                        f"candidate {cand.marker} lies in a measured wall opening but was "
+                        f"read as free-standing {element_type}; class left unresolved"
+                    ),
+                    ref=cand.marker,
+                )
+            )
+            element_type = "unknown_symbol"
+            confidence = min(confidence, 0.3)
+            unresolved.append(
+                Unresolved(
+                    path=f"openings/{cand.marker}/element_type",
+                    reason="a wall opening cannot be a free-standing legend element",
+                )
+            )
+
+        if cand.wall_index < 0 and element_type != "passage":
+            warnings.append(
+                ParseWarning(
+                    code="opening_reclassified_by_geometry",
+                    message=(
+                        f"candidate {cand.marker} was read as {element_type}, but it is "
+                        "a drawn functional divider with no host wall; reclassified passage"
+                    ),
+                    ref=cand.marker,
+                )
+            )
+            element_type = "passage"
+            confidence = min(confidence, 0.7)
+
         swing = hinge = None
         if cand.arc is not None:
             # A drawn quarter-disc at a jamb is a door leaf sweeping the
             # floor: windows, sliding leaves and plain passages do not have
             # one, and the arc is measured from pixels at leaf scale while
             # the class is a reading of a small crop. The drawing wins.
-            if element_type not in _SWINGING:
+            if element_type not in _SWINGING or (
+                cv_type == "double_door" and element_type != "double_door"
+            ):
+                physical_swinging = (
+                    cv_type if cv_type in _SWINGING else "single_door"
+                )
                 if source != "cv":  # a disagreement, not merely a CV-only read
                     warnings.append(
                         ParseWarning(
@@ -770,28 +1514,71 @@ def merge_openings(
                             message=(
                                 f"candidate {cand.marker} was read as {element_type} but "
                                 "the plan draws a door-leaf swing sector at its jamb; "
-                                "reclassified single_door"
+                                f"reclassified {physical_swinging}"
                             ),
                             ref=cand.marker,
                         )
                     )
-                element_type = "single_door"
+                element_type = physical_swinging
                 confidence = min(confidence, 0.7) if source != "cv" else 0.5
             swing, hinge = cand.arc.swing, cand.arc.hinge
+        elif source == "cv+vlm" and (
+            (cv_type == "sliding_door" and element_type in {"window", "passage", "unknown_symbol"})
+            or (balcony_track and element_type != "sliding_door")
+            or (balcony_window and element_type != "window")
+            or (zone_divider and element_type != "passage")
+            or (
+                cv_type == "passage"
+                and cand.kind_hint == "passage"
+                and element_type != "passage"
+            )
+            or (
+                cv_type == "single_door"
+                and (
+                    element_type == "unknown_symbol"
+                    or (
+                        element_type in _WINDOWS
+                        and _both_sides_indoor(cand.connects, rooms or [])
+                    )
+                )
+            )
+            or (
+                cv_type == "railing"
+                and element_type not in {"railing", "floor_to_ceiling_window"}
+            )
+            or (
+                cv_type == "floor_to_ceiling_window"
+                and element_type in {"window", "unknown_symbol"}
+            )
+        ):
+            warnings.append(
+                ParseWarning(
+                    code="opening_reclassified_by_geometry",
+                    message=(
+                        f"candidate {cand.marker} was read as {element_type}, but its "
+                        f"measured span and wall-side geometry identify a {cv_type}; "
+                        "reclassified"
+                    ),
+                    ref=cand.marker,
+                )
+            )
+            element_type = cv_type
+            confidence = min(confidence, 0.7)
         # A sliding door and a sliding window are the SAME drawn symbol —
         # parallel overlapping leaves — so only adjacency separates them, and
         # between two indoor rooms there is no exterior for a window to face.
         # The prompt says so; this makes it hold (a 1.5m 客厅↔门厅 sliding
         # door came back as sliding_window at 0.9 confidence).
-        if element_type == "sliding_window" and _both_sides_indoor(
-            cand.connects, rooms or []
+        if element_type == "sliding_window" and (
+            _both_sides_indoor(cand.connects, rooms or []) or cv_type == "sliding_door"
         ):
             warnings.append(
                 ParseWarning(
                     code="opening_reclassified_by_adjacency",
                     message=(
-                        f"candidate {cand.marker} was read as sliding_window but both "
-                        "sides are indoor rooms; reclassified sliding_door"
+                        f"candidate {cand.marker} was read as sliding_window but its "
+                        "parallel tracks span a walk-through between two rooms; "
+                        "reclassified sliding_door"
                     ),
                     ref=cand.marker,
                 )
@@ -822,14 +1609,65 @@ def merge_openings(
                     reason="indoor window reading conflicts with residential privacy",
                 )
             )
-        if scale is not None and element_type != "unknown_symbol":
-            per_mm = scale.px_per_mm_x if cand.axis == "h" else scale.px_per_mm_y
-            span_mm = cand.width_px / per_mm if per_mm > 0 else 0.0
+        elif (
+            element_type == "passage"
+            and "exterior" in cand.connects
+            and rooms is not None
+            and any(
+                isinstance(side, int)
+                and 0 <= side < len(rooms)
+                and rooms[side].room_type not in OUTDOOR_ROOM_TYPES
+                for side in cand.connects
+            )
+        ):
+            warnings.append(
+                ParseWarning(
+                    code="opening_habitability_conflict",
+                    message=(
+                        f"candidate {cand.marker} was read as an open passage through the "
+                        "dwelling envelope; class left unresolved because an exterior "
+                        "residential opening needs a door or window"
+                    ),
+                    ref=cand.marker,
+                )
+            )
+            element_type = "unknown_symbol"
+            confidence = min(confidence, 0.3)
+            unresolved.append(
+                Unresolved(
+                    path=f"openings/{cand.marker}/element_type",
+                    reason="open passage through the dwelling envelope is not habitable",
+                )
+            )
+        if span_mm is not None and element_type != "unknown_symbol":
             reason = None
+            connected_types = [
+                cv_rooms[side].room_type
+                for side in cand.connects
+                if isinstance(side, int) and 0 <= side < len(cv_rooms)
+            ]
+            wet_zone_door = (
+                cand.arc is not None
+                and len(connected_types) == 2
+                and all(room_type == "bathroom" for room_type in connected_types)
+            )
+            multi_panel_balcony_door = (
+                element_type == "sliding_door"
+                and len(connected_types) == 2
+                and any(room_type in OUTDOOR_ROOM_TYPES for room_type in connected_types)
+                and any(room_type not in OUTDOOR_ROOM_TYPES for room_type in connected_types)
+            )
             if (
+                element_type in _WALK_THROUGH
+                and span_mm < MIN_WALK_THROUGH_SPAN_MM
+                and not wet_zone_door
+            ):
+                reason = f"spans only {span_mm:.0f}mm — too narrow for habitable circulation"
+            elif (
                 element_type in _WALK_THROUGH
                 and element_type != "passage"
                 and span_mm > MAX_DOOR_SPAN_MM
+                and not multi_panel_balcony_door
             ):
                 reason = (
                     f"spans {span_mm:.0f}mm — wider than any door leaf can be built, "
@@ -899,26 +1737,17 @@ def merge_openings(
         y0, x0, y1, x1 = (v / 1000.0 for v in extra.box_2d)
         bbox = (x0 * w, y0 * h, x1 * w, y1 * h)
         approximate_opening = extra.element_type not in _FREE_STANDING
-        if approximate_opening and any(
-            _boxes_overlap(bbox, c.bbox, slack=8.0) for c in candidates
-        ):
-            continue
-        if approximate_opening and segments:
-            snapped = _snap_to_wall(bbox, segments)
-            if snapped is None:
-                warnings.append(
-                    ParseWarning(
-                        code="opening_without_a_wall",
-                        message=(
-                            f"a {extra.element_type} was reported where no wall runs; "
-                            "an opening is a hole in a wall, so it is not emitted"
-                        ),
-                    )
+        if approximate_opening:
+            warnings.append(
+                ParseWarning(
+                    code="opening_without_physical_evidence",
+                    message=(
+                        f"VLM suggested an unmarked {extra.element_type}, but no measured "
+                        "wall opening supports it; it is not emitted"
+                    ),
                 )
-                continue
-            bbox = snapped
-            if any(_boxes_overlap(bbox, c.bbox, slack=8.0) for c in candidates):
-                continue
+            )
+            continue
         elements.append(
             ElementDraft(
                 element_type=extra.element_type,
@@ -928,65 +1757,34 @@ def merge_openings(
                 confidence=min(extra.confidence, 0.5),
             )
         )
-        if approximate_opening:
-            warnings.append(
-                ParseWarning(
-                    code="opening_geometry_is_bbox",
-                    message=(
-                        f"a {extra.element_type} was found only by the VLM; it is reported "
-                        "under elements with approximate bounding-box geometry"
-                    ),
-                )
-            )
     return drafts, elements, warnings, unresolved
 
 
-MAX_SNAP_THICKNESSES = 3.0  # of the matched wall; beyond it there is no wall to be in
-
-
-def _snap_to_wall(
-    bbox: tuple[float, float, float, float], segments: list[WallSegment]
-) -> tuple[float, float, float, float] | None:
-    """Move a VLM-only opening onto the wall it belongs in, or reject it.
-
-    ``box_2d`` coordinates drift — measured on the corpus, 18 of 49
-    opening-shaped extras sat beside a wall rather than on one and 9 had no
-    wall within three thicknesses, up to 1.4m adrift, floating in the middle
-    of a room. A door or window is a hole in a wall: a nearby wall says
-    exactly where it is, and no nearby wall means we do not know, so nothing
-    is emitted rather than geometry that cannot be true.
-    """
-    cx, cy = (bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2
-    best: tuple[float, float, float] | None = None
-    for seg in segments:
-        (ax, ay), (bx, by) = seg.start, seg.end
-        dx, dy = bx - ax, by - ay
-        span = dx * dx + dy * dy
-        u = 0.0 if span == 0 else max(0.0, min(1.0, ((cx - ax) * dx + (cy - ay) * dy) / span))
-        px, py = ax + u * dx, ay + u * dy
-        gap = math.hypot(cx - px, cy - py) - MAX_SNAP_THICKNESSES * seg.thickness_px
-        if best is None or gap < best[0]:
-            best = (gap, px, py)
-    if best is None or best[0] > 0:
-        return None
-    ox, oy = best[1] - cx, best[2] - cy
-    return (bbox[0] + ox, bbox[1] + oy, bbox[2] + ox, bbox[3] + oy)
-
-
-def _boxes_overlap(
-    a: tuple[float, float, float, float],
-    b: tuple[float, float, float, float],
-    slack: float,
+def _window_beside_swing(
+    window: OpeningCandidate,
+    door: OpeningCandidate,
+    segments: list[WallSegment] | None,
 ) -> bool:
-    """True when grown boxes share at least 30% of the smaller box."""
-    ax0, ay0, ax1, ay1 = a
-    bx0, by0, bx1, by1 = (b[0] - slack, b[1] - slack, b[2] + slack, b[3] + slack)
-    ix = min(ax1, bx1) - max(ax0, bx0)
-    iy = min(ay1, by1) - max(ay0, by0)
-    if ix <= 0 or iy <= 0:
+    if (
+        window.axis not in {"h", "v"}
+        or window.axis != door.axis
+        or frozenset(window.connects) != frozenset(door.connects)
+        or segments is None
+        or not 0 <= window.wall_index < len(segments)
+    ):
         return False
-    smaller = min((ax1 - ax0) * (ay1 - ay0), (b[2] - b[0]) * (b[3] - b[1]))
-    return smaller > 0 and ix * iy >= 0.3 * smaller
+    thickness = segments[window.wall_index].thickness_px
+    along = (0, 2) if window.axis == "h" else (1, 3)
+    normal = 1 if window.axis == "h" else 0
+    gap = max(
+        0.0,
+        max(window.bbox[along[0]], door.bbox[along[0]])
+        - min(window.bbox[along[1]], door.bbox[along[1]]),
+    )
+    return (
+        abs(window.center[normal] - door.center[normal]) <= 1.5 * thickness
+        and gap <= 4.0 * thickness
+    )
 
 
 def apply_area_checks(rooms: list[RoomDraft], scale: ScaleDraft | None) -> MergeOutcome:
