@@ -19,13 +19,20 @@ deviation flags depend on comparing like with like.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from typing import Protocol
 
 import cv2
 import numpy as np
-from shapely.geometry import MultiPolygon, Polygon
+from shapely.geometry import LineString, MultiPolygon, Point, Polygon, box
+from shapely.ops import split
 from shapely.validation import make_valid
 
-from roomify.walls import WallExtraction
+from roomify.walls import WallExtraction, _arc_stroke_coverage
+
+
+class _RoomPolygon(Protocol):
+    @property
+    def polygon(self) -> np.ndarray: ...
 
 MIN_COMPACTNESS = 0.03  # 4πA/P²; furniture outlines and slivers score lower
 MIN_ASPECT = 0.1  # min-area-rect aspect; rooms are not 10:1 threads
@@ -182,8 +189,9 @@ def detect_rooms(walls: WallExtraction, min_area_px: float | None = None) -> Roo
     # variant, arc-style leaky plans win with the hinted one.
     variants: list[tuple[np.ndarray, np.ndarray | None, str]] = [(union, None, "")]
     if walls.door_hints is not None:
+        door_seals = walls.door_seals if walls.door_seals is not None else walls.door_hints
         variants.append(
-            (cv2.bitwise_or(union, walls.door_hints), walls.door_hints, "+door_hints")
+            (cv2.bitwise_or(union, door_seals), walls.door_hints, "+door_hints")
         )
     kernel5 = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
 
@@ -227,7 +235,394 @@ def detect_rooms(walls: WallExtraction, min_area_px: float | None = None) -> Roo
     if recovered:
         rooms = sorted(detection.rooms + recovered, key=lambda r: -r.area_px)
         detection = RoomDetection(rooms=rooms, strategy=detection.strategy)
+    if not walls.angles:
+        detection = replace(
+            detection,
+            rooms=_split_double_door_zones(
+                _orthogonal_rooms(detection.rooms, walls.thickness_px),
+                walls,
+                min_area_px,
+            ),
+        )
     return detection
+
+
+def _split_double_door_zones(
+    rooms: list[CVRoom], walls: WallExtraction, min_area_px: float
+) -> list[CVRoom]:
+    """Split a merged room where paired door arcs prove an internal zone boundary."""
+    if walls.zones is None or walls.door_hints is None:
+        return rooms
+    count, _labels, stats, centroids = cv2.connectedComponentsWithStats(
+        walls.zones, connectivity=8
+    )
+    components = []
+    for index in range(1, count):
+        x, y, width, height, _area = (int(value) for value in stats[index])
+        if (
+            max(width, height) >= 3 * walls.thickness_px
+            and min(width, height) <= 0.6 * walls.thickness_px
+        ):
+            components.append((x, y, width, height, centroids[index]))
+
+    out: list[CVRoom] = []
+    for room in rooms:
+        polygon = Polygon(room.polygon)
+        replacement = None
+        for x, y, width, height, centroid in components:
+            vertical = height > width
+            fixed = float(centroid[0] if vertical else centroid[1])
+            low = float(y if vertical else x)
+            high = float(y + height - 1 if vertical else x + width - 1)
+            middle = Point(fixed, (low + high) / 2) if vertical else Point(
+                (low + high) / 2, fixed
+            )
+            ends = (
+                (Point(fixed, low), Point(fixed, high))
+                if vertical
+                else (Point(low, fixed), Point(high, fixed))
+            )
+            if (
+                not room.zone_bounded
+                or not polygon.buffer(-0.5 * walls.thickness_px).contains(middle)
+                or max(point.distance(polygon.boundary) for point in ends)
+                > 2 * walls.thickness_px
+                or not _paired_zone_arcs(vertical, fixed, low, high, walls)
+            ):
+                continue
+            coordinates = room.polygon[:, 0 if vertical else 1]
+            snapped = min(coordinates, key=lambda value: abs(value - fixed))
+            if abs(snapped - fixed) > walls.thickness_px:
+                snapped = fixed
+            x0, y0, x1, y1 = polygon.bounds
+            cutter = (
+                LineString(((snapped, y0 - 1), (snapped, y1 + 1)))
+                if vertical
+                else LineString(((x0 - 1, snapped), (x1 + 1, snapped)))
+            )
+            parts = [part for part in split(polygon, cutter).geoms if part.area >= min_area_px]
+            if len(parts) == 2:
+                replacement = [_room_from_polygon(part, room) for part in parts]
+                break
+        out.extend(replacement or [room])
+    return sorted(out, key=lambda room: -room.area_px)
+
+
+def _paired_zone_arcs(
+    vertical: bool,
+    fixed: float,
+    low: float,
+    high: float,
+    walls: WallExtraction,
+) -> bool:
+    door_hints = walls.door_hints
+    if door_hints is None:
+        return False
+    radius = (high - low + 1) / 2
+    if vertical:
+        leaves = (
+            ((fixed, low), np.array((0.0, 1.0))),
+            ((fixed, high), np.array((0.0, -1.0))),
+        )
+        normals = (np.array((-1.0, 0.0)), np.array((1.0, 0.0)))
+    else:
+        leaves = (
+            ((low, fixed), np.array((1.0, 0.0))),
+            ((high, fixed), np.array((-1.0, 0.0))),
+        )
+        normals = (np.array((0.0, -1.0)), np.array((0.0, 1.0)))
+    valid = walls.solid == 0
+    for normal in normals:
+        for factor in np.arange(0.70, 1.41, 0.05):
+            scores = []
+            for hinge, along in leaves:
+                stroke = _arc_stroke_coverage(
+                    door_hints, valid, hinge, along, normal, radius * factor
+                )
+                baseline = _arc_stroke_coverage(
+                    door_hints, valid, hinge, along, normal, radius * factor * 1.3
+                )
+                scores.append((stroke, stroke - baseline))
+            if min(score[0] for score in scores) >= 0.35 and min(
+                score[1] for score in scores
+            ) >= 0.25:
+                return True
+    return False
+
+
+def _room_from_polygon(polygon: Polygon, source: CVRoom) -> CVRoom:
+    ring = np.asarray(polygon.exterior.coords[:-1], dtype=np.float64)
+    edges = np.linalg.norm(np.diff(np.vstack((ring, ring[:1])), axis=0), axis=1)
+    seed = polygon.representative_point()
+    return replace(
+        source,
+        polygon=ring,
+        area_px=float(polygon.area),
+        perimeter_px=float(edges.sum()),
+        edge_lengths_px=[float(edge) for edge in edges],
+        seed=(float(seed.x), float(seed.y)),
+        zone_bounded=True,
+    )
+
+
+def _orthogonal_rooms(rooms: list[CVRoom], wall_thickness: float) -> list[CVRoom]:
+    """Snap a rectilinear plan's final room faces to right-angle polygons.
+
+    Contour approximation turns one-pixel raster jitter into diagonal edges;
+    door/window strokes also leave wall-depth rectangular detours.  Real
+    diagonal plans advertise a wall family and never call this function.
+    """
+    out: list[CVRoom] = []
+    snap = max(3.0, 1.5 * wall_thickness)
+    max_jog = max(2.0, 1.2 * wall_thickness)
+    line_slack = max(1.0, 0.5 * wall_thickness)
+    for room in rooms:
+        ring = _orthogonal_ring(room.polygon, snap, max_jog, line_slack)
+        if ring is None:
+            return rooms
+        # ponytail: wall-width slivers are wall/window pockets, not rooms;
+        # model service shafts separately if they become a required output.
+        if min(np.ptp(ring, axis=0)) <= 2.0 * wall_thickness:
+            continue
+        polygon = Polygon(ring)
+        closed = np.vstack([ring, ring[:1]])
+        edges = np.linalg.norm(np.diff(closed, axis=0), axis=1)
+        seed = polygon.representative_point()
+        out.append(
+            replace(
+                room,
+                polygon=ring,
+                area_px=float(polygon.area),
+                perimeter_px=float(edges.sum()),
+                edge_lengths_px=[float(edge) for edge in edges],
+                seed=(float(seed.x), float(seed.y)),
+            )
+        )
+    return sorted(out, key=lambda room: -room.area_px)
+
+
+def clean_room_ring(
+    points: np.ndarray, wall_thickness: float, solid: np.ndarray
+) -> np.ndarray:
+    """Remove furniture-neck notches without changing opening detection."""
+    original = Polygon(points)
+    closed = original.buffer(wall_thickness, join_style=2).buffer(
+        -wall_thickness, join_style=2
+    )
+    if isinstance(closed, MultiPolygon):
+        closed = max(closed.geoms, key=lambda polygon: polygon.area)
+    if isinstance(closed, Polygon):
+        added = closed.difference(original)
+        parts = [added] if isinstance(added, Polygon) else [
+            part for part in getattr(added, "geoms", ()) if isinstance(part, Polygon)
+        ]
+        accepted = original
+        rejected = False
+        for part in parts:
+            if part.is_empty or len(part.exterior.coords) < 3:
+                continue
+            added_mask = np.zeros_like(solid)
+            cv2.fillPoly(
+                added_mask,
+                [np.round(part.exterior.coords).astype(np.int32)],
+                255,
+            )
+            pixels = added_mask > 0
+            width = part.bounds[2] - part.bounds[0]
+            height = part.bounds[3] - part.bounds[1]
+            if (
+                not pixels.any()
+                or float((solid[pixels] > 0).mean()) < 0.20
+                or max(width, height) <= 9.0 * wall_thickness
+            ):
+                accepted = accepted.union(part)
+            else:
+                rejected = True
+        if not rejected:
+            accepted = closed
+        if isinstance(accepted, Polygon):
+            closed = accepted
+    # ponytail: a narrow genuine U-shaped room can exceed this corpus-backed
+    # cap; raise it only when such a labelled room enters the corpus.
+    if (
+        not isinstance(closed, Polygon)
+        or closed.is_empty
+        or original.symmetric_difference(closed).area > 0.12 * original.area
+    ):
+        closed = original
+    ring = np.asarray(closed.exterior.coords[:-1], dtype=np.float64)
+    orthogonal = _orthogonal_ring(
+        ring,
+        max(3.0, 1.5 * wall_thickness),
+        max(2.0, 1.2 * wall_thickness),
+        max(1.0, 0.5 * wall_thickness),
+    )
+    return ring if orthogonal is None else orthogonal
+
+
+def _orthogonal_ring(
+    points: np.ndarray, snap: float, max_jog: float, line_slack: float
+) -> np.ndarray | None:
+    """Return a valid H/V-only ring, or None when an edge is genuinely diagonal."""
+    pts = points.copy()
+    n = len(pts)
+    parents = [list(range(n)), list(range(n))]  # x groups, y groups
+
+    def root(parent: list[int], item: int) -> int:
+        while parent[item] != item:
+            parent[item] = parent[parent[item]]
+            item = parent[item]
+        return item
+
+    def join(parent: list[int], left: int, right: int) -> None:
+        left, right = root(parent, left), root(parent, right)
+        if left != right:
+            parent[right] = left
+
+    for i in range(n):
+        j = (i + 1) % n
+        dx, dy = abs(pts[j, 0] - pts[i, 0]), abs(pts[j, 1] - pts[i, 1])
+        if min(dx, dy) > snap:
+            return None
+        join(parents[1 if dx >= dy else 0], i, j)
+
+    for dimension, parent in enumerate(parents):
+        groups: dict[int, list[int]] = {}
+        for i in range(n):
+            groups.setdefault(root(parent, i), []).append(i)
+        for indices in groups.values():
+            pts[indices, dimension] = round(float(np.median(pts[indices, dimension])))
+
+    polygon = _largest_polygon(_drop_axis_collinear(pts))
+    if polygon is None:
+        return None
+    ring = _remove_shallow_jogs(
+        _drop_axis_collinear(np.asarray(polygon.exterior.coords[:-1], dtype=np.float64)),
+        max_jog,
+        line_slack,
+    )
+    ring = _rectangularize_shallow_l(ring, max_jog)
+    if len(ring) < 4 or any(
+        a[0] != b[0] and a[1] != b[1]
+        for a, b in zip(ring, np.roll(ring, -1, axis=0), strict=True)
+    ):
+        return None
+    return ring
+
+
+def _largest_polygon(points: np.ndarray) -> Polygon | None:
+    geometry = Polygon(points)
+    if not geometry.is_valid:
+        geometry = make_valid(geometry)
+
+    def parts(value):
+        if isinstance(value, Polygon):
+            yield value
+        else:
+            for part in getattr(value, "geoms", ()):
+                yield from parts(part)
+
+    return max(parts(geometry), key=lambda polygon: polygon.area, default=None)
+
+
+def _drop_axis_collinear(points: np.ndarray) -> np.ndarray:
+    pts = points.copy()
+    for _ in range(100):
+        if len(pts) <= 4:
+            break
+        removed = False
+        for i in range(len(pts)):
+            before = pts[i] - pts[i - 1]
+            after = pts[(i + 1) % len(pts)] - pts[i]
+            cross = before[0] * after[1] - before[1] * after[0]
+            if abs(cross) < 1e-6 and np.dot(before, after) >= 0:
+                pts = np.delete(pts, i, axis=0)
+                removed = True
+                break
+        if not removed:
+            break
+    return pts
+
+
+def _remove_shallow_jogs(
+    points: np.ndarray, max_depth: float, line_slack: float
+) -> np.ndarray:
+    """Bridge wall-depth rectangular detours while preserving real L shapes."""
+    pts = points.copy()
+    for _ in range(50):
+        changed = False
+        n = len(pts)
+        if n <= 4:
+            break
+        for span in range(2, min(6, n - 1)):
+            for i in range(n):
+                indices = [(i + offset) % n for offset in range(span + 1)]
+                start, end = pts[indices[0]], pts[indices[-1]]
+                candidate = pts.copy()
+                if abs(start[0] - end[0]) <= line_slack:
+                    dimension = 0
+                    target = round(float((start[0] + end[0]) / 2))
+                    depth = max(abs(pts[index, 0] - target) for index in indices)
+                elif abs(start[1] - end[1]) <= line_slack:
+                    dimension = 1
+                    target = round(float((start[1] + end[1]) / 2))
+                    depth = max(abs(pts[index, 1] - target) for index in indices)
+                else:
+                    continue
+                if not 0 < depth <= max_depth:
+                    continue
+                on_either_line = np.isclose(candidate[:, dimension], start[dimension]) | np.isclose(
+                    candidate[:, dimension], end[dimension]
+                )
+                candidate[on_either_line, dimension] = target
+                dropped = set(indices[1:-1])
+                candidate = _drop_axis_collinear(
+                    np.asarray([point for j, point in enumerate(candidate) if j not in dropped])
+                )
+                polygon = Polygon(candidate)
+                if len(candidate) < 4 or not polygon.is_valid or polygon.area <= 0:
+                    continue
+                pts = candidate
+                changed = True
+                break
+            if changed:
+                break
+        if not changed:
+            break
+    return pts
+
+
+def _rectangularize_shallow_l(points: np.ndarray, max_depth: float) -> np.ndarray:
+    """Remove one door-depth toe from an otherwise rectangular room."""
+    if len(points) != 6:
+        return points
+    polygon = Polygon(points)
+    xs, ys = np.unique(points[:, 0]), np.unique(points[:, 1])
+    best: tuple[float, Polygon] | None = None
+    for i, x0 in enumerate(xs[:-1]):
+        for x1 in xs[i + 1 :]:
+            for j, y0 in enumerate(ys[:-1]):
+                for y1 in ys[j + 1 :]:
+                    candidate = box(x0, y0, x1, y1)
+                    score = polygon.symmetric_difference(candidate).area
+                    if best is None or score < best[0]:
+                        best = (score, candidate)
+    if best is None or best[0] > 0.05 * polygon.area:
+        return points
+    difference = polygon.symmetric_difference(best[1])
+    pieces = (
+        [difference]
+        if isinstance(difference, Polygon)
+        else [part for part in difference.geoms if isinstance(part, Polygon)]
+    )
+    if any(
+        min(part.bounds[2] - part.bounds[0], part.bounds[3] - part.bounds[1]) > max_depth
+        for part in pieces
+    ):
+        return points
+    return np.asarray(best[1].exterior.coords[:-1], dtype=np.float64)
+
+
 
 
 def uncovered_floor(walls: WallExtraction, rooms: list[CVRoom]) -> np.ndarray:
@@ -320,6 +715,7 @@ def _composite(
     appear more consistently.
     """
     from shapely.geometry import Polygon as ShapelyPolygon
+    from shapely.ops import unary_union
 
     clusters: list[dict] = []
     for cand in candidates:
@@ -370,6 +766,51 @@ def _composite(
     unchosen = [cl for cl in clusters if cl not in chosen]
     final: list[dict] = []
     for cl in chosen:
+        stable = [
+            piece
+            for piece in unchosen
+            if piece["count"] * 2 >= len(candidates)
+            and 0.01 * building_area <= piece["poly"].area < 0.5 * cl["poly"].area
+            and piece["poly"].intersection(cl["poly"]).area >= 0.8 * piece["poly"].area
+            and _boundary_fraction(piece["room"], union)
+            >= _boundary_fraction(cl["room"], union) - DECOMPOSE_INK_SLACK
+        ]
+        placed: list[dict] = []
+        for piece in sorted(stable, key=lambda value: -value["poly"].area):
+            if all(
+                piece["poly"].intersection(other["poly"]).area
+                <= 0.25 * piece["poly"].area
+                for other in placed
+            ):
+                placed.append(piece)
+        if placed:
+            cut = unary_union([piece["poly"] for piece in placed])
+            rest = cl["poly"].difference(cut)
+            if not isinstance(rest, ShapelyPolygon):
+                parts = sorted(
+                    (
+                        part
+                        for part in getattr(rest, "geoms", ())
+                        if isinstance(part, ShapelyPolygon)
+                    ),
+                    key=lambda part: -part.area,
+                )
+                if parts and sum(part.area for part in parts[1:]) <= DECOMPOSE_INK_SLACK * cut.area:
+                    rest = parts[0]
+            if (
+                isinstance(rest, ShapelyPolygon)
+                and not rest.interiors
+                and rest.area >= 0.01 * building_area
+            ):
+                final.append(
+                    {
+                        **cl,
+                        "poly": rest,
+                        "room": _room_from_polygon(rest, cl["room"]),
+                    }
+                )
+                final.extend(placed)
+                continue
         if cl["poly"].area < 0.08 * building_area:
             # only merge-scale voids qualify — a small room's "sub-voids"
             # are texture accidents, not structure
@@ -382,20 +823,20 @@ def _composite(
             and p["room"].area_px >= 0.01 * building_area
             and p["poly"].intersection(cl["poly"]).area >= 0.8 * p["poly"].area
         ]
-        placed: list[dict] = []
+        split_pieces: list[dict] = []
         for p in sorted(pieces, key=lambda p: -p["room"].area_px):
             if all(
                 p["poly"].intersection(q["poly"]).area <= 0.25 * p["poly"].area
-                for q in placed
+                for q in split_pieces
             ):
-                placed.append(p)
+                split_pieces.append(p)
         if (
-            len(placed) >= 2
-            and sum(p["poly"].area for p in placed) >= 0.7 * cl["poly"].area
-            and max(_boundary_fraction(p["room"], union) for p in placed)
+            len(split_pieces) >= 2
+            and sum(p["poly"].area for p in split_pieces) >= 0.7 * cl["poly"].area
+            and max(_boundary_fraction(p["room"], union) for p in split_pieces)
             >= _boundary_fraction(cl["room"], union) - DECOMPOSE_INK_SLACK
         ):
-            final.extend(placed)
+            final.extend(split_pieces)
         else:
             final.append(cl)
     chosen = final
@@ -445,13 +886,10 @@ def _holes_to_rooms(
 
         room = _polygonize(contour, walls.thickness_px)
         if room is not None:
-            # a door-scale pocket bounded largely by hint strokes is a swing
-            # sector carved off its room, not a room
-            if (
-                hints is not None
-                and room.area_px < 3500
-                and _boundary_fraction(room, hints) >= 0.25
-            ):
+            # A pocket whose boundary is mostly door furniture is the swing
+            # sector carved off its room, not a room. Boundary evidence is
+            # scale-free; the old fixed pixel-area cap leaked at high DPI.
+            if _is_door_pocket(room, hints, walls.thickness_px, walls.solid):
                 continue
             if walls.zones is not None:
                 room = replace(room, zone_bounded=_touches_zone(room, walls.zones))
@@ -461,7 +899,7 @@ def _holes_to_rooms(
     return rooms
 
 
-def _boundary_fraction(room: CVRoom, mask: np.ndarray) -> float:
+def _boundary_fraction(room: _RoomPolygon, mask: np.ndarray) -> float:
     """Share of the room's boundary that rides within 3px of ``mask``."""
     near = cv2.dilate(mask, np.ones((7, 7), np.uint8))
     h, w = near.shape
@@ -476,6 +914,21 @@ def _boundary_fraction(room: CVRoom, mask: np.ndarray) -> float:
             if 0 <= x < w and 0 <= y < h and near[y, x]:
                 hits += 1
     return hits / total if total else 0.0
+
+
+def _is_door_pocket(
+    room: CVRoom,
+    hints: np.ndarray | None,
+    wall_thickness: float,
+    solid: np.ndarray | None = None,
+) -> bool:
+    """True when door furniture, rather than walls, encloses a small void."""
+    return bool(
+        hints is not None
+        and max(np.ptp(room.polygon, axis=0)) <= 20.0 * wall_thickness
+        and _boundary_fraction(room, hints) >= 0.25
+        and (solid is None or _boundary_fraction(room, solid) < 0.70)
+    )
 
 
 def _touches_zone(room: CVRoom, zones: np.ndarray) -> bool:

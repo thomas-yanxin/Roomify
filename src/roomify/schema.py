@@ -184,7 +184,7 @@ class Wall(StrictModel):
 
 
 class Opening(StrictModel):
-    """A wall-hosted element: door, window, passage, or bay window."""
+    """A wall-hosted element: door, window, passage, bay window, or railing."""
 
     id: str
     element_type: ElementType

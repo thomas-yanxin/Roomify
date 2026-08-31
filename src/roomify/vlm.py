@@ -1,10 +1,10 @@
 """VLM semantics layer.
 
-The VLM never produces geometry that is used as geometry — CV owns that.
-It reads what only reading can supply: label text, room types, printed
-areas, dimension chains, legend classification, and vetoes. Coordinates it
-returns (``box_2d``) are used solely as fallback bounding boxes for things
-CV missed, and are marked ``source="vlm"`` downstream.
+The VLM never overrules measured geometry — CV owns that.  It reads what
+only reading can supply: label text, room types, printed areas, dimension
+chains, legend classification, and vetoes.  Coordinates it returns locate
+printed labels in CV polygons or provide explicitly marked fallback boxes
+for things CV missed.
 
 Marker-keyed contracts everywhere: responses are dictionaries keyed by the
 marker id burned into the overlay image, never position-matched lists —
@@ -27,7 +27,7 @@ from typing import Literal, TypeVar, get_args
 
 import cv2
 import numpy as np
-from pydantic import BaseModel, Field, ValidationError, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from roomify.rooms import CVRoom
 from roomify.schema import ElementType, RoomType
@@ -38,6 +38,19 @@ T = TypeVar("T", bound=BaseModel)
 
 _ROOM_TYPES: tuple[str, ...] = get_args(RoomType)
 _ELEMENT_TYPES: tuple[str, ...] = get_args(ElementType)
+_OPENING_TYPES = tuple(
+    value
+    for value in _ELEMENT_TYPES
+    if value == "passage"
+    or value == "unknown_symbol"
+    or value.endswith("_door")
+    or value == "window"
+    or value.endswith("_window")
+)
+_SERVICE_ROOM_LABEL = re.compile(
+    r"^未命名$|管道(?:井)?|管井|烟道|风井|pipe\s*shaft|utility\s*shaft|duct", re.I
+)
+_ENTRANCE_ROOM_LABEL = re.compile(r"玄关|门厅|入户花园|\b(?:foyer|entry)\b", re.I)
 
 SYSTEM_PROMPT = (
     "You are a floor-plan reading assistant. Analyze the provided floor-plan images and reply "
@@ -92,10 +105,34 @@ def _valid_box(v: object) -> list[float] | None:
     return [y0, x0, y1, x1]
 
 
+def _ordered_box(v: object) -> list[float] | None:
+    """Accept a valid model box even when it swaps either pair of corners."""
+    if not isinstance(v, list) or len(v) != 4:
+        return None
+    nums = [_to_float(item) for item in v]
+    if any(item is None for item in nums):
+        return None
+    y0, x0, y1, x1 = (float(item) for item in nums if item is not None)
+    y0, y1 = sorted((y0, y1))
+    x0, x1 = sorted((x0, x1))
+    if not (0 <= y0 < y1 <= 1000 and 0 <= x0 < x1 <= 1000):
+        return None
+    return [y0, x0, y1, x1]
+
+
 class PlanRead(BaseModel):
     footprint_box_2d: list[float] | None = None  # [ymin, xmin, ymax, xmax], 0-1000
     dimension_chains: list[ChainRead] = []
     north_angle_deg: float | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _single_item_root(cls, v: object) -> object:
+        if v == []:
+            return {}
+        if isinstance(v, list) and len(v) == 1 and isinstance(v[0], dict):
+            return v[0]
+        return v
 
     @field_validator("footprint_box_2d", mode="before")
     @classmethod
@@ -122,6 +159,7 @@ class RoomEntry(BaseModel):
     printed_area_sqm: float | None = None
     confidence: float = Field(default=0.5, ge=0, le=1)
     not_a_room: bool = False
+    spatially_grounded: bool = Field(default=False, exclude=True)
 
     @field_validator("room_type", mode="before")
     @classmethod
@@ -140,9 +178,27 @@ class RoomEntry(BaseModel):
         f = _to_float(v)
         return min(max(f, 0.0), 1.0) if f is not None else 0.5
 
+    @model_validator(mode="after")
+    def _normalize_semantics(self):
+        service = bool(self.name and _SERVICE_ROOM_LABEL.search(self.name))
+        if not self.not_a_room and not service:
+            if (
+                self.name
+                and self.room_type in {"unknown_space", "multipurpose"}
+                and _ENTRANCE_ROOM_LABEL.search(self.name)
+            ):
+                self.room_type = "entrance"
+            return self
+        self.name = None
+        self.printed_area_sqm = None
+        self.not_a_room = True
+        return self
+
 
 class ExtraRoom(RoomEntry):
     box_2d: list[float]
+    label_box_2d: list[float] | None = None
+    expected_area_px: float | None = Field(default=None, exclude=True)
 
     @field_validator("box_2d", mode="before")
     @classmethod
@@ -151,6 +207,17 @@ class ExtraRoom(RoomEntry):
         if box is None:
             raise ValueError("box_2d must be [ymin, xmin, ymax, xmax] within 0-1000")
         return box
+
+    @field_validator("label_box_2d", mode="before")
+    @classmethod
+    def _label_box(cls, v: object) -> list[float] | None:
+        return None if v is None else _ordered_box(v)
+
+    @field_validator("expected_area_px", mode="before")
+    @classmethod
+    def _expected_area(cls, v: object) -> float | None:
+        value = _to_float(v)
+        return value if value is not None and value > 0 else None
 
 
 def _marker_keyed(v: object) -> object:
@@ -173,9 +240,46 @@ def _marker_keyed(v: object) -> object:
     return table
 
 
+def _unwrap_sections(v: object, *keys: str) -> object:
+    """Normalize arrays that wrap or interleave named response sections."""
+    items = v if isinstance(v, list) else [v]
+    if any(
+        isinstance(item, dict)
+        and item.get("type") == "object"
+        and isinstance(item.get("properties"), dict)
+        for item in items
+    ):
+        raise ValueError("VLM echoed the JSON schema instead of response data")
+    if not isinstance(v, list):
+        return v
+    if len(v) == 1 and isinstance(v[0], dict) and any(key in v[0] for key in keys):
+        return v[0]
+    sections: dict[str, list] = {}
+    loose = []
+    for item in v:
+        matched = False
+        if isinstance(item, dict):
+            for key in keys:
+                if key in item and isinstance(item[key], list):
+                    sections.setdefault(key, []).extend(item[key])
+                    matched = True
+        if not matched:
+            loose.append(item)
+    if not sections:
+        return v
+    sections.setdefault(keys[0], []).extend(loose)
+    return sections
+
+
 class RoomRead(BaseModel):
     rooms: dict[str, RoomEntry] = {}
     extra_rooms: list[ExtraRoom] = []
+
+    @model_validator(mode="before")
+    @classmethod
+    def _list_root(cls, v: object) -> object:
+        v = _unwrap_sections(v, "rooms", "extra_rooms")
+        return {"rooms": v, "extra_rooms": []} if isinstance(v, list) else v
 
     @field_validator("rooms", mode="before")
     @classmethod
@@ -193,6 +297,52 @@ class RoomRead(BaseModel):
                 kept.append(ExtraRoom.model_validate(item))
             except ValidationError:
                 logger.warning("dropping malformed extra_rooms entry: %r", item)
+        return kept
+
+
+class SpatialRoomEntry(RoomEntry):
+    label_box_2d: list[float]
+    room_box_2d: list[float]
+
+    @model_validator(mode="before")
+    @classmethod
+    def _fallback_room_box(cls, v: object) -> object:
+        if not isinstance(v, dict):
+            return v
+        label_box = _ordered_box(v.get("label_box_2d"))
+        if label_box is not None and _ordered_box(v.get("room_box_2d")) is None:
+            return {**v, "room_box_2d": label_box}
+        return v
+
+    @field_validator("label_box_2d", "room_box_2d", mode="before")
+    @classmethod
+    def _box(cls, v: object) -> list[float]:
+        box = _ordered_box(v)
+        if box is None:
+            raise ValueError("box must contain two ordered 0-1000 corners")
+        return box
+
+
+class SpatialRoomRead(BaseModel):
+    rooms: list[SpatialRoomEntry] = []
+
+    @model_validator(mode="before")
+    @classmethod
+    def _list_root(cls, v: object) -> object:
+        v = _unwrap_sections(v, "rooms")
+        return {"rooms": v} if isinstance(v, list) else v
+
+    @field_validator("rooms", mode="before")
+    @classmethod
+    def _drop_malformed(cls, v: object) -> list:
+        if not isinstance(v, list):
+            return []
+        kept = []
+        for item in v:
+            try:
+                kept.append(SpatialRoomEntry.model_validate(item))
+            except ValidationError:
+                logger.warning("dropping malformed spatial room entry: %r", item)
         return kept
 
 
@@ -229,6 +379,12 @@ class ExtraElement(CandidateEntry):
 class OpeningsRead(BaseModel):
     candidates: dict[str, CandidateEntry] = {}
     extra_elements: list[ExtraElement] = []
+
+    @model_validator(mode="before")
+    @classmethod
+    def _list_root(cls, v: object) -> object:
+        v = _unwrap_sections(v, "candidates", "extra_elements")
+        return {"candidates": v, "extra_elements": []} if isinstance(v, list) else v
 
     @field_validator("candidates", mode="before")
     @classmethod
@@ -297,6 +453,14 @@ _ROOM_ENTRY = {
     "confidence": {"type": "number"},
     "not_a_room": {"type": "boolean"},
 }
+_SPATIAL_ROOM_ENTRY = {
+    "name": {"type": "string"},
+    "room_type": {"type": "string", "enum": list(_ROOM_TYPES)},
+    "printed_area_sqm": {"type": ["number", "null"]},
+    "confidence": {"type": "number"},
+    "label_box_2d": {"type": "array", "items": {"type": "integer"}},
+    "room_box_2d": {"type": "array", "items": {"type": "integer"}},
+}
 _OPENING_ENTRY = {
     "marker": {"type": "string"},
     "element_type": {"type": "string", "enum": list(_ELEMENT_TYPES)},
@@ -328,10 +492,24 @@ ROOMS_WIRE = _wire(
         ),
     },
 )
+SPATIAL_ROOMS_WIRE = _wire(
+    "spatial_room_inventory",
+    {"rooms": _entries(_SPATIAL_ROOM_ENTRY)},
+)
 OPENINGS_WIRE = _wire(
     "opening_classes",
     {
         "candidates": _entries(_OPENING_ENTRY),
+        "extra_elements": _entries(
+            {k: v for k, v in _OPENING_ENTRY.items() if k != "marker"}
+            | {"box_2d": {"type": "array", "items": {"type": "integer"}}}
+        ),
+    },
+)
+EXTRAS_WIRE = _wire(
+    "unmarked_elements",
+    {
+        "candidates": _entries({}),
         "extra_elements": _entries(
             {k: v for k, v in _OPENING_ENTRY.items() if k != "marker"}
             | {"box_2d": {"type": "array", "items": {"type": "integer"}}}
@@ -553,6 +731,46 @@ def render_room_overlay(bgr: np.ndarray, rooms: list[CVRoom]) -> np.ndarray:
     return out
 
 
+def render_room_sheet(bgr: np.ndarray, rooms: list[CVRoom]) -> np.ndarray:
+    """Original pixels beside the numbered overlay in one VLM image.
+
+    The unmodified panel preserves small labels that even a carefully placed
+    marker can cover; the matching overlay panel supplies the marker ids.
+    """
+    gap = np.full((bgr.shape[0], 8, 3), 255, np.uint8)
+    return np.hstack((bgr, gap, render_room_overlay(bgr, rooms)))
+
+
+def remap_room_sheet_extras(
+    read: RoomRead, panel_width: int, gap: int = 8
+) -> RoomRead:
+    """Map extra-room boxes from either review panel back to source pixels."""
+    sheet_width = 2 * panel_width + gap
+    remapped = []
+    for extra in read.extra_rooms:
+        y0, x0, y1, x1 = extra.box_2d
+        px0, px1 = x0 * sheet_width / 1000.0, x1 * sheet_width / 1000.0
+        if px1 <= panel_width:
+            offset = 0
+        elif px0 >= panel_width + gap:
+            offset = panel_width + gap
+        else:
+            logger.warning("dropping extra-room box spanning review-sheet panels: %r", extra.box_2d)
+            continue
+        source_box = [
+            y0,
+            1000.0 * (px0 - offset) / panel_width,
+            y1,
+            1000.0 * (px1 - offset) / panel_width,
+        ]
+        valid = _valid_box(source_box)
+        if valid is None:
+            logger.warning("dropping extra-room box outside its review panel: %r", extra.box_2d)
+            continue
+        remapped.append(extra.model_copy(update={"box_2d": valid}))
+    return read.model_copy(update={"extra_rooms": remapped})
+
+
 def render_openings_overlay(bgr: np.ndarray, candidates: list) -> np.ndarray:
     """Magenta boxes + letters on each opening candidate (full-plan context)."""
     out = bgr.copy()
@@ -591,6 +809,60 @@ def render_candidate_crop(bgr: np.ndarray, candidate) -> np.ndarray:
     return crop
 
 
+def render_candidate_sheet(
+    bgr: np.ndarray,
+    candidates: list,
+    *,
+    context_candidates: list | None = None,
+) -> np.ndarray:
+    """One VLM image containing full-plan context and magnified crops.
+
+    Some OpenAI-compatible vision endpoints time out on multi-image messages.
+    Compositing the same evidence into one review sheet keeps the visual detail
+    while avoiding that transport/model limitation.
+    """
+    if not candidates:
+        raise ValueError("candidate sheet needs at least one candidate")
+
+    cell_h, cell_w, columns = 260, 320, min(3, len(candidates))
+    cells: list[np.ndarray] = []
+    for candidate in candidates:
+        crop = render_candidate_crop(bgr, candidate)
+        scale = min((cell_w - 12) / crop.shape[1], (cell_h - 12) / crop.shape[0])
+        crop = cv2.resize(
+            crop,
+            (max(1, round(crop.shape[1] * scale)), max(1, round(crop.shape[0] * scale))),
+            interpolation=cv2.INTER_AREA if scale < 1 else cv2.INTER_CUBIC,
+        )
+        cell = np.full((cell_h, cell_w, 3), 255, np.uint8)
+        x = (cell_w - crop.shape[1]) // 2
+        y = (cell_h - crop.shape[0]) // 2
+        cell[y : y + crop.shape[0], x : x + crop.shape[1]] = crop
+        cv2.rectangle(cell, (0, 0), (cell_w - 1, cell_h - 1), (210, 210, 210), 1)
+        cells.append(cell)
+
+    blank = np.full((cell_h, cell_w, 3), 255, np.uint8)
+    while len(cells) % columns:
+        cells.append(blank.copy())
+    crops = np.vstack(
+        [np.hstack(cells[start : start + columns])
+         for start in range(0, len(cells), columns)]
+    )
+
+    overlay = render_openings_overlay(bgr, context_candidates or candidates)
+    target_width = crops.shape[1]
+    factor = min(target_width / overlay.shape[1], 620 / overlay.shape[0])
+    overlay = cv2.resize(
+        overlay,
+        (max(1, round(overlay.shape[1] * factor)), max(1, round(overlay.shape[0] * factor))),
+        interpolation=cv2.INTER_AREA if factor < 1 else cv2.INTER_CUBIC,
+    )
+    top = np.full((overlay.shape[0], target_width, 3), 255, np.uint8)
+    x = (target_width - overlay.shape[1]) // 2
+    top[:, x : x + overlay.shape[1]] = overlay
+    return np.vstack((top, np.full((8, target_width, 3), 255, np.uint8), crops))
+
+
 def marker_ids(count: int) -> list[str]:
     """A, B, …, Z, AA, AB, … — ids for opening candidates."""
     letters = string.ascii_uppercase
@@ -623,7 +895,12 @@ def plan_read_prompt() -> str:
     )
 
 
-def room_semantics_prompt(n_rooms: int, area_shares: dict[str, float] | None = None) -> str:
+def room_semantics_prompt(
+    n_rooms: int,
+    area_shares: dict[str, float] | None = None,
+    *,
+    review_sheet: bool = False,
+) -> str:
     """``area_shares`` maps marker → its measured share of the total detected
     floor area. The model matches labels to markers visually and fumbles once
     fragments multiply; the measured sizes are exact and pin the pairing —
@@ -642,16 +919,28 @@ def room_semantics_prompt(n_rooms: int, area_shares: dict[str, float] | None = N
             "size almost certainly belongs to a different marker:\n"
             f"{lines}\n"
         )
+    image_description = (
+        "This single review image shows the unmodified floor plan on the LEFT and the same "
+        "plan with numbered yellow markers on the RIGHT. Read text from the unobscured left "
+        "panel and use the right panel only to map it to marker ids."
+        if review_sheet
+        else "This floor plan image carries numbered yellow circular markers."
+    )
     return (
-        f"This floor plan image carries {n_rooms} numbered yellow circular markers "
+        f"{image_description} There are {n_rooms} markers "
         f"(numbers 1 to {n_rooms}). Each marker sits slightly ABOVE the center of one "
         "automatically detected room region, so the room's own label text is usually just "
         "below the marker.\n"
         f"{share_block}"
         "For EACH marker number report:\n"
         '- "name": the room label text printed in that room, exactly as written (e.g. "卧室", '
-        '"客厅") — do not translate; null if the room has no text label.\n'
+        '"客厅") — transcribe characters literally; never translate, paraphrase, or replace '
+        'a label with a synonym (for example, 储物间 must not become 储藏间); null if the room '
+        "has no text label.\n"
         f'- "room_type": one of [{types}].\n'
+        "Infer room_type from fixed architectural fixtures, independently of name: a room "
+        "with a toilet is a bathroom; a cooktop plus sink is a kitchen; an exterior open "
+        "platform is a balcony. Furniture alone is weaker evidence.\n"
         '- "printed_area_sqm": the floor area printed in that room as a number (e.g. "9.65㎡" '
         "→ 9.65); null if no area is printed.\n"
         '- "confidence": your confidence 0.0-1.0.\n'
@@ -659,25 +948,61 @@ def room_semantics_prompt(n_rooms: int, area_shares: dict[str, float] | None = N
         "on a wall, outside the building, or on an annotation).\n"
         "Judge rooms strictly by their structural walls; ignore floor textures, furniture "
         "drawings, dimension lines and text outside the building.\n"
+        "First inventory every clearly printed usable-room label plus area from the "
+        "unobscured panel (ignore AC/空调机位, 管道, 管道井, pipe/utility shafts, ducts, "
+        "fixtures, and dimension annotations); use it only as a completeness checklist. "
+        "Never invent name text for an unlabelled room; keep name null while still inferring "
+        "room_type from its fixtures. "
+        "Do not force an inventory label onto a marker; unmarked labels belong in "
+        "extra_rooms. A detected marker region can wrongly span several structurally "
+        "separate labelled spaces: assign its dominant space to the marker and emit every "
+        "other labelled space as an extra_room even when the overlay polygon covers it.\n"
         'Additionally, list real rooms that have NO marker under "extra_rooms". Each entry: '
         '{"box_2d": [ymin, xmin, ymax, xmax] integers 0-1000 fitted to the room\'s inner wall '
         'faces, "name": ..., "room_type": ..., "printed_area_sqm": ...}. Box the room\'s floor '
-        "area, never just its text label. Use an empty list when every room is markered.\n"
+        "area, never just its text label. On a two-panel review image, draw this box on either "
+        "panel and scale its coordinates against the ENTIRE review image, not one panel. Use "
+        "an empty list when every room is markered. An extra room must be structurally "
+        "separate; never box a bed, sofa, dining table, cabinet, or its surrounding floor.\n"
         'Return JSON: {"rooms": [{"marker": "1", "name": ..., "room_type": ..., '
         '"printed_area_sqm": ..., "confidence": ..., "not_a_room": ...}, ...], '
         '"extra_rooms": [...]} — one entry per marker number.'
     )
 
 
+def spatial_room_inventory_prompt() -> str:
+    """Inventory unobscured labels; text position, not list order, grounds them."""
+    types = ", ".join(f'"{room_type}"' for room_type in _ROOM_TYPES)
+    return (
+        "Inventory every clearly printed usable-room label in this residential floor plan "
+        "exactly once. Include balconies, terraces, entrances, halls, storage and closets. "
+        "Exclude AC/空调机位, 管道, 管道井, pipe/utility shafts, ducts, furniture, fixtures "
+        "and dimensions. Never merge two printed labels. For each room transcribe its "
+        "Chinese name literally and its adjacent printed square-metre area; use null when "
+        "no area is printed. "
+        f'room_type must be one of [{types}]. '
+        "label_box_2d=[ymin,xmin,ymax,xmax] integers 0-1000 tightly encloses ONLY the "
+        "printed room name plus its area text. room_box_2d uses the same coordinate order "
+        "and encloses that room's inner floor faces. Both corner pairs must be increasing. "
+        'Return JSON {"rooms":[{"name":"...","room_type":"...",'
+        '"printed_area_sqm":1.0,"confidence":0.9,"label_box_2d":[...],'
+        '"room_box_2d":[...]}]}.'
+    )
+
+
 def openings_prompt(
-    ids: list[str], include_extras: bool = True, context: dict[str, str] | None = None
+    ids: list[str],
+    include_extras: bool = True,
+    context: dict[str, str] | None = None,
+    *,
+    contact_sheet: bool = False,
 ) -> str:
     """``context`` maps marker → a structural one-liner from CV (what the
     break connects, its measured width). The model cannot see adjacency in a
     tight crop, yet it is the strongest classification prior there is: a
     900mm break between two interior rooms is a door, whatever its strokes
     resemble."""
-    types = ", ".join(f'"{t}"' for t in _ELEMENT_TYPES)
+    types = ", ".join(f'"{t}"' for t in _OPENING_TYPES)
     context_block = ""
     if context:
         lines = "\n".join(f"  {marker}: {context[marker]}" for marker in ids if marker in context)
@@ -686,6 +1011,8 @@ def openings_prompt(
             f"{lines}\n"
             "Openings between two interior rooms are doors or passages, not windows, unless "
             "the crop clearly shows glazing onto a light well. Windows face the exterior. "
+            "A passage is never an opening through a dwelling's exterior envelope; classify "
+            "that as a door, window, or unknown_symbol according to visible evidence. "
             "A door-width break (700-1100mm) between rooms with a plain leaf line is a "
             "single_door even without a swing arc.\n"
         )
@@ -699,11 +1026,16 @@ def openings_prompt(
         if include_extras
         else 'Set "extra_elements" to an empty list.\n'
     )
+    image_description = (
+        "The single image is a review sheet: its top panel is the full floor plan with all "
+        "opening candidates boxed in magenta, and its lower cells are magnified crops of the "
+        "markers requested here. Each crop has its marker burned into the corner."
+        if contact_sheet
+        else "The first image is the full floor plan with magenta marker boxes. The following "
+        "images are magnified crops, one per marker, with the same letter burned into the corner."
+    )
     return (
-        f"The first image is a floor plan on which openings are marked with magenta boxes and "
-        f"letters. Classify ONLY these {len(ids)} markers: {', '.join(ids)}. The following "
-        "images are magnified crops, one per marker, with the same letter burned into the "
-        "corner.\n"
+        f"{image_description} Classify ONLY these {len(ids)} markers: {', '.join(ids)}.\n"
         "Using each crop for detail and the full plan for context, classify each marker:\n"
         f'- "element_type": one of [{types}].\n'
         "  Visual cues: a window is 2-3 thin parallel lines spanning the wall break; a "
@@ -724,4 +1056,20 @@ def openings_prompt(
         + ids[0]
         + '", "element_type": ..., "raw_text": ..., "confidence": ..., "is_real": ...}, ...], '
         '"extra_elements": [...]} — one entry per letter.'
+    )
+
+
+def extra_elements_prompt() -> str:
+    """Find free-standing symbols missed by CV."""
+    types = ", ".join(f'"{t}"' for t in _ELEMENT_TYPES)
+    return (
+        "Every detected door/window candidate is boxed and lettered in magenta. Find ONLY "
+        "clearly visible FREE-STANDING structural symbols that NO magenta box covers: stairs, "
+        "standalone railings, elevators, columns, or equipment platforms. Do not report doors, "
+        "windows, or passages: those require a measured wall gap. Never repeat "
+        "a boxed object. Do not report furniture, dimensions, room labels, wall corners, "
+        "textures, or the north arrow. If nothing clear was missed, return an empty "
+        'extra_elements list and an empty candidates list. Each extra element has "box_2d" '
+        "as [ymin, xmin, ymax, xmax] integers scaled 0-1000, "
+        f'"element_type" as one of [{types}], "raw_text", "confidence", and "is_real".'
     )

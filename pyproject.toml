@@ -36,6 +36,7 @@ dev = ["pytest>=8,<10", "ruff>=0.5,<1", "mypy>=1.10,<3"]
 
 [project.scripts]
 roomify = "roomify.cli:main"
+roomify-eval = "roomify.evaluation:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/roomify"]
@@ -52,3 +53,6 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "dev_corpus: frozen examples regression; never release/generalization evidence",
+]

@@ -33,12 +33,12 @@ roomify floorplan.png -o floorplan.json
   <img src="examples/floorplan-1.png" alt="Roomify 示例使用的住宅户型图" width="620">
 </p>
 
-[`floorplan-1.png`](examples/floorplan-1.png) →
-[`floorplan-1.json`](examples/floorplan-1.json)
+[`floorplan-1.png`](examples/floorplan-1.png) → 执行
+`roomify examples/floorplan-1.png -o plan.json`
 
 | 房间 | 墙段 | 开口 | 比例尺置信度 | 客厅面积 |
 |---:|---:|---:|:---:|:---|
-| 9 | 55 | 18 | `high` | 计算 37.34 m² / 标注 37.52 m² |
+| 9 | 41 | 16 | `high` | 计算 37.88 m² / 标注 37.52 m² |
 
 完整结果中的部分字段如下：
 
@@ -212,7 +212,8 @@ FloorPlan
 ## 工作方式
 
 1. 读取图片或 PDF，并保留到原始像素坐标的映射。
-2. 使用计算机视觉检测墙体、封闭房间和墙体开口。
+2. 使用计算机视觉检测墙体、封闭房间和墙体开口。没有真实斜墙族时，将房间边界
+   归一化为严格正交多边形并剔除墙厚级狭缝；斜墙户型仍使用通用多边形路径。
 3. 将带编号的标记图发送给 VLM，读取房间名称、标注面积、尺寸和符号类型。
 4. 合并两类结果，分别计算 x/y 比例尺，再用 Pydantic 校验输出。
 
@@ -221,9 +222,11 @@ FloorPlan
 
 ### VLM 请求
 
-正常读图使用 [结构化输出](https://developers.openai.com/api/docs/guides/structured-outputs)：
-启用 strict `json_schema`，关闭模型思考。仓库示例端到端约 25–40 秒；自由推理
-实测慢 6–30 倍。
+房间文字和比例尺读取使用
+[结构化输出](https://developers.openai.com/api/docs/guides/structured-outputs)：启用 strict
+`json_schema`，关闭模型思考。门窗分类使用一张“整图 + 放大裁剪”审查页和经
+Pydantic 校验的 JSON object；部分兼容端点会接受复杂的门窗 schema、随后在约束
+解码时超时，单图审查页可避开该失败模式。
 
 Roomify 最多同时发起两路 VLM 请求。端点不支持 `json_schema` 或
 `enable_thinking` 时，会在本次会话中停用对应功能。响应未通过 schema 校验时，
@@ -231,10 +234,51 @@ Roomify 最多同时发起两路 VLM 请求。端点不支持 `json_schema` 或
 
 ## 当前范围
 
-- 实心填充墙体的住宅户型图效果最好。
+- 当前发布支持范围是：实心填充墙体、常规门窗图例的正交住宅户型图。
 - 纯线框 CAD 图会走较简单的回退路径。
 - 两个空间之间完全没有分隔线时，会被识别为一个房间。
 - 飘窗需要外沿和两条侧边在图中可见；证据不完整时保留为未解析，不猜深度。
+- `floorplan-6`、`floorplan-8`、`floorplan-14` 含真实斜边或多轴墙体，明确不在
+  当前正交模式支持范围内；历史回归仅用于诊断，不计作“支持且通过”。
+
+## 评测与发布门禁
+
+`examples/` 现冻结为开发集。`tests/integration/` 中的精确像素断言只负责发现
+该开发集上的回归，不能作为泛化证据。单元测试和开发集回归分开运行：
+
+```bash
+uv run pytest -m "not dev_corpus"
+uv run pytest -m dev_corpus
+```
+
+发布证据必须来自仓库外、不可见、跨来源的 holdout。先为每张私有图片生成同名
+Roomify JSON，再把人工标注放在另一个目录，执行：
+
+```bash
+uv run roomify-eval /secure/predictions /secure/truth \
+  --gates evaluation/release-gates-v1.json -o holdout-report.json
+```
+
+评测器输出房间平均 IoU、墙体边界 F1、严格类型门窗 F1、可通行邻接图 F1 和物理
+违规率；固定门禁同时作用于总体和每个 `source_group`。v1 至少要求 3 个独立来源、
+30 个 case。标注文件使用以下最小结构：
+
+```json
+{
+  "protocol_version": "1.0",
+  "source_group": "independent-provider-a",
+  "image_sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "image_width_px": 1000,
+  "image_height_px": 800,
+  "orthogonal": true,
+  "rooms": [{"id": "r1", "polygon_px": [{"x": 0, "y": 0}, {"x": 100, "y": 0}, {"x": 100, "y": 80}, {"x": 0, "y": 80}]}],
+  "walls": [{"start_px": {"x": 0, "y": 0}, "end_px": {"x": 100, "y": 0}}],
+  "openings": [{"element_type": "single_door", "bbox_px": {"x0": 30, "y0": 0, "x1": 50, "y1": 8}, "connects": ["r1", "exterior"]}]
+}
+```
+
+修改提取规则或阈值时不得复制、派生或查看 holdout 标签。只有上述门禁实际通过，
+才能声明发布已验证；仓库内 examples 全过不能产生该结论。
 
 ## 开发
 
@@ -245,8 +289,7 @@ uv run ruff check src tests
 uv run mypy src
 ```
 
-每个功能改动都必须通过在线 VLM 验收：真实运行仓库示例并与人工审核基准对比。
-测试需要配置三个 VLM 环境变量：
+在线 VLM 开发集回归会消耗真实调用，并需要配置三个 VLM 环境变量：
 
 ```bash
 uv run pytest tests/integration

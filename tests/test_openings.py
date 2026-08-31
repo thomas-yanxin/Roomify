@@ -5,16 +5,21 @@ import pytest
 from conftest import WALL_GREY, blank, draw_gap, draw_sill, draw_wall_rect
 from roomify.merge import RoomDraft, merge_rooms
 from roomify.openings import (
+    ArcEvidence,
     OpeningCandidate,
     WallSegment,
+    _dedupe_corner_swings,
+    _merge_zone_facade_panels,
+    _recover_corner_swing,
     _resolve_unknown_adjacencies,
+    _scan_segment,
     derive_wall_segments,
     find_openings,
     find_zone_passages,
     measure_bay_protrusion,
 )
 from roomify.rooms import detect_rooms
-from roomify.walls import extract_walls
+from roomify.walls import WallExtraction, extract_walls
 
 
 def _drafts(img):
@@ -46,6 +51,17 @@ def test_door_gap_found_with_connects_and_wall():
     assert door.arc is None  # no arc drawn -> no swing invented
 
 
+def test_plain_internal_gap_without_leaf_ink_is_a_passage():
+    img = _two_room_plan(with_sills=False)
+    wx, drafts = _drafts(img)
+
+    openings, _ = find_openings(wx, drafts, img, door_px=40)
+    internal = [opening for opening in openings if set(opening.connects) == {0, 1}]
+
+    assert len(internal) == 1
+    assert internal[0].kind_hint == "passage"
+
+
 def test_window_hint_from_parallel_strokes():
     img = _two_room_plan()
     draw_gap(img, 150, 96, 240, 104)
@@ -72,10 +88,94 @@ def test_tinted_sector_yields_swing():
     arc = doors[0].arc
     assert arc is not None
     assert arc.hinge[1] == pytest.approx(240, abs=8)
-    left_room_idx = next(
-        i for i, d in enumerate(drafts) if d.seed[0] < 300 and d.source != "vlm"
-    )
+    left_room_idx = next(i for i, d in enumerate(drafts) if d.seed[0] < 300 and d.source != "vlm")
     assert arc.opens_into == left_room_idx
+
+
+def test_stroked_arc_tolerates_frame_width():
+    img = _two_room_plan(with_sills=False)
+    # The wall break includes its reveal (41px), while the drawn leaf is 36px.
+    cv2.ellipse(img, (300, 240), (36, 36), 0, 180, 270, (40, 40, 40), 2)
+    wx, drafts = _drafts(img)
+
+    doors = [
+        candidate
+        for candidate in find_openings(wx, drafts, img, door_px=40)[0]
+        if set(candidate.connects) == {0, 1}
+    ]
+
+    assert len(doors) == 1
+    assert doors[0].arc is not None
+
+
+def test_open_door_leaf_is_not_a_second_corner_opening():
+    threshold = OpeningCandidate(
+        marker="A",
+        bbox=(104.0, 128.0, 140.0, 138.0),
+        center=(122.0, 133.0),
+        axis="h",
+        width_px=36.0,
+        kind_hint="doorlike",
+        connects=(0, 1),
+        wall_index=0,
+        arc=ArcEvidence((104.0, 133.0), "clockwise", 1),
+    )
+    leaf = OpeningCandidate(
+        marker="B",
+        bbox=(94.0, 100.0, 104.0, 130.0),
+        center=(99.0, 115.0),
+        axis="v",
+        width_px=30.0,
+        kind_hint="doorlike",
+        connects=(0, 1),
+        wall_index=1,
+        arc=ArcEvidence((99.0, 100.0), "clockwise", 1),
+    )
+
+    assert _dedupe_corner_swings([threshold, leaf], 10.0) == [threshold]
+
+
+def test_weak_corner_arc_does_not_merge_different_doors():
+    threshold = OpeningCandidate(
+        marker="A",
+        bbox=(100.0, 70.0, 108.0, 106.0),
+        center=(104.0, 88.0),
+        axis="v",
+        width_px=36.0,
+        kind_hint="doorlike",
+        connects=(0, 1),
+        wall_index=0,
+        arc=None,
+    )
+    neighbour = OpeningCandidate(
+        marker="B",
+        bbox=(106.0, 102.0, 136.0, 110.0),
+        center=(121.0, 106.0),
+        axis="h",
+        width_px=31.0,
+        kind_hint="doorlike",
+        connects=(1, "unknown"),
+        wall_index=1,
+        arc=ArcEvidence((108.0, 106.0), "clockwise", 1),
+    )
+    shape = (180, 180)
+    blank_mask = np.zeros(shape, np.uint8)
+    walls = WallExtraction(
+        solid=blank_mask,
+        lines=blank_mask,
+        union=blank_mask,
+        band=(100, 150),
+        bands=[(100, 150)],
+        band_fallback=False,
+        thickness_px=10.0,
+        footprint=(0, 0, 179, 179),
+    )
+
+    recovered = _recover_corner_swing(
+        [threshold, neighbour], walls, [], np.zeros((*shape, 3), np.uint8), blank_mask
+    )
+
+    assert recovered == [threshold, neighbour]
 
 
 def test_flat_room_has_no_arc():
@@ -112,6 +212,31 @@ def test_wall_segments_shared_and_exterior():
     assert any("exterior" in s.rooms for s in segments)
     divider = shared[0]
     assert abs(divider.start[0] - 300) < 8 and abs(divider.end[0] - 300) < 8
+
+
+def test_only_spatially_grounded_vlm_room_contributes_wall_segments():
+    from dataclasses import replace
+
+    img = blank()
+    draw_wall_rect(img, 100, 100, 500, 400, thickness=10)
+    wx, drafts = _drafts(img)
+    approximate = replace(drafts[0], source="vlm")
+
+    assert derive_wall_segments([approximate], wx) == []
+    assert derive_wall_segments(
+        [replace(approximate, spatially_grounded=True)], wx
+    )
+
+    divided = _two_room_plan()
+    wx, drafts = _drafts(divided)
+    grounded = [
+        replace(room, source="vlm", spatially_grounded=True)
+        if room.seed[0] > 300
+        else room
+        for room in drafts
+    ]
+    candidates, _ = find_openings(wx, grounded, divided, door_px=40)
+    assert any(set(candidate.connects) == {0, 1} for candidate in candidates)
 
 
 def test_exterior_segments_use_wall_center_not_inner_face():
@@ -176,13 +301,31 @@ def test_unmatched_internal_wall_is_unknown():
 def test_tee_junction_ends_meet_perpendicular_walls():
     from roomify.openings import WallSegment, _close_tee_junctions
 
-    horizontal = WallSegment(start=(104.0, 200.0), end=(300.0, 200.0),
-                             thickness_px=8.0, rooms=(0, 1))
-    vertical = WallSegment(start=(100.0, 100.0), end=(100.0, 300.0),
-                           thickness_px=8.0, rooms=(0, "exterior"))
+    # Door notches can leave the traced face almost two wall thicknesses short.
+    horizontal = WallSegment(
+        start=(115.0, 200.0), end=(300.0, 200.0), thickness_px=8.0, rooms=(0, 1)
+    )
+    vertical = WallSegment(
+        start=(100.0, 100.0), end=(100.0, 300.0), thickness_px=8.0, rooms=(0, "exterior")
+    )
     closed = _close_tee_junctions([horizontal, vertical], t=8.0)
-    assert closed[0].start == (100.0, 200.0)  # extended 4px to the crossing wall
+    assert closed[0].start == (100.0, 200.0)
     assert closed[1] == vertical  # the crossed wall itself is untouched
+
+
+def test_tee_junction_trims_short_overrun():
+    from roomify.openings import WallSegment, _close_tee_junctions
+
+    horizontal = WallSegment(
+        start=(92.0, 200.0), end=(300.0, 200.0), thickness_px=8.0, rooms=(0, 1)
+    )
+    vertical = WallSegment(
+        start=(100.0, 100.0), end=(100.0, 300.0), thickness_px=8.0, rooms=(0, "exterior")
+    )
+
+    closed = _close_tee_junctions([horizontal, vertical], t=8.0)
+
+    assert closed[0].start == (100.0, 200.0)
 
 
 def test_door_sized_gap_keeps_one_host_wall():
@@ -196,6 +339,77 @@ def test_door_sized_gap_keeps_one_host_wall():
     assert len(fused) == 1
     assert fused[0].start == (100.0, 100.0)
     assert fused[0].end == (100.0, 300.0)
+
+
+def test_diagonal_parallel_strokes_are_scanned_as_an_opening():
+    from roomify.walls import WallExtraction
+
+    shape = (220, 220)
+    lines = np.zeros(shape, np.uint8)
+    start, end = (40, 180), (180, 40)
+    cv2.line(lines, start, end, 255, 2)
+    # A second parallel leaf only over the opening interval.
+    cv2.line(lines, (89, 139), (139, 89), 255, 2)
+    walls = WallExtraction(
+        solid=np.zeros(shape, np.uint8),
+        lines=lines,
+        union=lines,
+        band=(130, 185),
+        bands=[(130, 185)],
+        band_fallback=False,
+        thickness_px=6.0,
+        footprint=(20, 20, 200, 200),
+    )
+    segment = WallSegment(start, end, 6.0, (0, 1))
+
+    found = _scan_segment(
+        0,
+        segment,
+        walls,
+        [None, None],
+        np.full(shape, 255, np.uint8),
+        min_len=20,
+        max_len=100,
+    )
+
+    assert len(found) == 1
+    assert found[0].axis == "d"
+    assert found[0].kind_hint == "window"
+    assert found[0].connects == (0, 1)
+
+
+def test_thin_wall_is_refined_before_its_gap_becomes_an_opening():
+    from roomify.walls import WallExtraction
+
+    shape = (160, 260)
+    lines = np.zeros(shape, np.uint8)
+    cv2.line(lines, (30, 80), (104, 80), 255, 2)
+    cv2.line(lines, (145, 80), (230, 80), 255, 2)
+    walls = WallExtraction(
+        solid=np.zeros(shape, np.uint8),
+        lines=lines,
+        union=lines,
+        band=(130, 185),
+        bands=[(130, 185)],
+        band_fallback=False,
+        thickness_px=6.0,
+        footprint=(20, 20, 240, 140),
+    )
+    segment = WallSegment((30, 80), (230, 80), 6.0, (0, 1))
+
+    found = _scan_segment(
+        0,
+        segment,
+        walls,
+        [None, None],
+        np.full(shape, 255, np.uint8),
+        min_len=20,
+        max_len=220,
+    )
+
+    assert len(found) == 1
+    assert found[0].center == pytest.approx((124.5, 80.0), abs=1)
+    assert found[0].width_px == pytest.approx(40, abs=3)
 
 
 def test_short_diagonal_stubs_are_not_walls(simple_plan):
@@ -213,6 +427,36 @@ def test_short_diagonal_stubs_are_not_walls(simple_plan):
         dy = abs(seg.end[1] - seg.start[1])
         if min(dx, dy) > 0.09 * max(dx, dy):  # diagonal
             assert float(np.hypot(dx, dy)) >= 2.5 * wx.thickness_px
+
+
+def test_diagonal_room_edge_needs_a_detected_wall_family(simple_plan):
+    from dataclasses import replace
+
+    wx = extract_walls(simple_plan)
+    polygon = np.array(
+        [[100.0, 100.0], [300.0, 100.0], [400.0, 200.0], [400.0, 400.0], [100.0, 400.0]]
+    )
+    draft = RoomDraft(
+        polygon=polygon,
+        area_px=85000.0,
+        perimeter_px=1000.0,
+        edge_lengths_px=[200.0, 141.4, 200.0, 300.0, 300.0],
+        seed=(250.0, 250.0),
+        source="cv",
+        confidence=0.8,
+    )
+
+    without_family = derive_wall_segments([draft], wx)
+    supported = wx.union.copy()
+    cv2.line(supported, (300, 100), (400, 200), 255, round(wx.thickness_px))
+    with_family = derive_wall_segments(
+        [draft], replace(wx, angles=(45.0,), union=supported)
+    )
+
+    assert not any(
+        min(abs(s.end[0] - s.start[0]), abs(s.end[1] - s.start[1])) > 1 for s in without_family
+    )
+    assert any(min(abs(s.end[0] - s.start[0]), abs(s.end[1] - s.start[1])) > 1 for s in with_family)
 
 
 def test_no_swing_sector_is_read_at_more_than_a_leaf_width():
@@ -377,9 +621,7 @@ def test_far_side_of_a_wall_is_the_room_behind_it():
 
 def test_unknown_opening_uses_only_a_unique_nearby_room():
     def room(x0, x1, y0, y1):
-        polygon = np.array(
-            [[x0, y0], [x1, y0], [x1, y1], [x0, y1]], dtype=np.float64
-        )
+        polygon = np.array([[x0, y0], [x1, y0], [x1, y1], [x0, y1]], dtype=np.float64)
         return RoomDraft(
             polygon=polygon,
             area_px=float((x1 - x0) * (y1 - y0)),
@@ -413,6 +655,24 @@ def test_unknown_opening_uses_only_a_unique_nearby_room():
     )
     assert ambiguous[0].connects == (0, "unknown")
 
+    circulation_rooms = [
+        room(0, 100, 0, 90),
+        room(0, 45, 110, 200),
+        room(55, 100, 110, 200),
+    ]
+    circulation_rooms[1].room_type = "living_room"
+    circulation_rooms[2].room_type = "hallway"
+    resolved = _resolve_unknown_adjacencies([candidate], circulation_rooms, 10.0)
+    assert resolved[0].connects == (0, 2)
+
+    recovered_landing = _resolve_unknown_adjacencies(
+        [candidate],
+        [room(0, 100, 0, 90), room(0, 48, 108, 200), room(60, 100, 110, 200)],
+        10.0,
+        exterior_rooms={1},
+    )
+    assert recovered_landing[0].connects == (0, 2)
+
 
 def test_dashed_zone_divider_is_not_reported_as_a_wall():
     """You cannot lean on a dashed line.
@@ -433,7 +693,8 @@ def test_dashed_zone_divider_is_not_reported_as_a_wall():
 
     segments = derive_wall_segments(drafts, wx)
     on_divider = [
-        s for s in segments
+        s
+        for s in segments
         if abs((s.start[0] + s.end[0]) / 2 - 300) < 10 and abs(s.end[1] - s.start[1]) > 60
     ]
     assert on_divider == [], [(s.start, s.end, s.rooms) for s in on_divider]
@@ -449,6 +710,96 @@ def test_dashed_zone_divider_is_not_reported_as_a_wall():
     assert set(passages[0].connects) == {0, 1}
     assert passages[0].width_px > 200
 
-    # A dashed line does not make private rooms an open-plan pair.
+    # The pixels are physically open even when the semantics are unusual;
+    # the pipeline reports the privacy conflict separately.
     right.room_type = "bedroom"
-    assert find_zone_passages(wx, drafts, segments) == []
+    assert len(find_zone_passages(wx, drafts, segments)) == 1
+
+
+def test_zone_divider_that_leaks_into_lines_is_not_a_wall():
+    """A texture-bridged dashed line is still a zone, not structure."""
+    from dataclasses import replace
+
+    img = blank()
+    draw_wall_rect(img, 100, 100, 500, 400, thickness=10)
+    for y in range(108, 396, 12):
+        cv2.line(img, (300, y), (300, y + 6), (120, 120, 120), 2)
+
+    wx, drafts = _drafts(img)
+    assert wx.zones is not None
+    leaked_lines = cv2.bitwise_or(wx.lines, wx.zones)
+    leaked = replace(wx, lines=leaked_lines, union=cv2.bitwise_or(wx.solid, leaked_lines))
+
+    segments = derive_wall_segments(drafts, leaked)
+
+    assert not any(
+        abs((segment.start[0] + segment.end[0]) / 2 - 300) < 10
+        and abs(segment.end[1] - segment.start[1]) > 60
+        for segment in segments
+    )
+
+
+def test_zone_cut_does_not_split_one_facade_opening():
+    empty = np.zeros((100, 100), np.uint8)
+    zones = empty.copy()
+    cv2.line(zones, (30, 22), (30, 70), 255, 1)
+    walls = WallExtraction(
+        solid=empty,
+        lines=empty,
+        union=empty,
+        band=(100, 150),
+        bands=[(100, 150)],
+        band_fallback=False,
+        thickness_px=4,
+        footprint=(0, 0, 99, 99),
+        inferred_zones=zones,
+    )
+    rooms = [
+        RoomDraft(
+            polygon=np.array([[0, 0], [20, 0], [20, 20], [0, 20]], dtype=float),
+            area_px=area,
+            perimeter_px=80,
+            edge_lengths_px=[20] * 4,
+            seed=(10, 10),
+            source="cv",
+            confidence=0.5,
+            zone_bounded=True,
+        )
+        for area in (400, 100)
+    ]
+    candidates = [
+        OpeningCandidate(
+            "A", (10, 20, 30, 24), (20, 22), "h", 21, "window", (0, "exterior"), 0, None
+        ),
+        OpeningCandidate(
+            "B",
+            (30, 20, 45, 24),
+            (37.5, 22),
+            "h",
+            16,
+            "window",
+            (1, "exterior"),
+            1,
+            None,
+        ),
+    ]
+    segments = [
+        WallSegment((10, 22), (30, 22), 4, (0, "exterior")),
+        WallSegment((30, 22), (60, 22), 4, (1, "exterior")),
+    ]
+
+    merged, hosts = _merge_zone_facade_panels(
+        candidates,
+        segments,
+        rooms,
+        walls,
+        [None, None],
+        np.full((100, 100, 3), 255, np.uint8),
+        empty,
+    )
+
+    assert len(merged) == 1
+    assert merged[0].bbox == (10.0, 20.0, 45.0, 24.0)
+    assert merged[0].connects == (0, "exterior")
+    assert hosts[merged[0].wall_index].start == (10, 22.0)
+    assert hosts[merged[0].wall_index].end == (45, 22.0)
